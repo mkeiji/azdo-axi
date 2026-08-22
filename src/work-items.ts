@@ -27,6 +27,22 @@ export interface WorkItemListResult extends Record<string, unknown> {
   items: Array<Record<string, unknown>>;
 }
 
+export interface QueryResult extends Record<string, unknown> {
+  context: AzureDevOpsContext;
+  scope: { organization: string; project: string; team?: string; wiql: string };
+  count: number;
+  items: Array<Record<string, unknown>>;
+}
+
+export interface WorkItemLinksResult extends Record<string, unknown> {
+  context: AzureDevOpsContext;
+  scope: { organization: string; project: string; team?: string };
+  workItemId: string;
+  count: number;
+  links: Array<Record<string, unknown>>;
+  item?: Record<string, unknown>;
+}
+
 const DEFAULT_TEXT_LIMIT = 2_000;
 const DEFAULT_HISTORY_LIMIT = 20;
 const FIELDS = {
@@ -89,6 +105,42 @@ export async function listWorkItems(
   return { context, scope, count: items.length, items };
 }
 
+export async function queryWorkItems(
+  runner: CommandRunner,
+  context: AzureDevOpsContext,
+  wiql: string,
+): Promise<QueryResult> {
+  const args = [
+    "boards",
+    "query",
+    "--wiql",
+    wiql,
+    "--organization",
+    context.organization,
+    "--project",
+    context.project,
+    "--output",
+    "json",
+    "--only-show-errors",
+  ];
+  const raw = await runAzureJson(runner, args, "query");
+  if (!Array.isArray(raw)) {
+    throw invalidOutput("query returned an object instead of an array");
+  }
+  const items = raw.map((item) => queryItem(item));
+  return {
+    context,
+    scope: {
+      organization: context.organization,
+      project: context.project,
+      ...(context.team ? { team: context.team } : {}),
+      wiql,
+    },
+    count: items.length,
+    items,
+  };
+}
+
 export async function showWorkItem(
   runner: CommandRunner,
   context: AzureDevOpsContext,
@@ -121,6 +173,53 @@ export async function showWorkItem(
   };
 }
 
+export async function linkWorkItem(
+  runner: CommandRunner,
+  context: AzureDevOpsContext,
+  id: string,
+): Promise<WorkItemLinksResult> {
+  const args = [
+    "boards",
+    "work-item",
+    "show",
+    "--id",
+    id,
+    "--organization",
+    context.organization,
+    "--project",
+    context.project,
+    "--expand",
+    "relations",
+    "--output",
+    "json",
+    "--only-show-errors",
+  ];
+  const raw = await runAzureJson(runner, args, `work-item links ${id}`);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw invalidOutput("work-item links returned an invalid object");
+  }
+  const item = raw as Record<string, unknown>;
+  const links = linkRelations(item.relations);
+  const fields = asRecord(item.fields);
+  return {
+    context,
+    scope: {
+      organization: context.organization,
+      project: context.project,
+      ...(context.team ? { team: context.team } : {}),
+    },
+    workItemId: id,
+    count: links.length,
+    links,
+    item: compact({
+      id: item.id ?? id,
+      type: fields[FIELDS.type],
+      title: fields[FIELDS.title],
+      fields: Object.keys(fields).length > 0 ? fields : undefined,
+    }),
+  };
+}
+
 export function buildListWiql(options: WorkItemReadOptions = {}): string {
   const predicates = [
     "[System.TeamProject] = @project",
@@ -150,6 +249,20 @@ export function buildListWiql(options: WorkItemReadOptions = {}): string {
 
 function escapeWiqlLiteral(value: string): string {
   return value.replaceAll("'", "''");
+}
+
+export function queryItem(value: unknown): Record<string, unknown> {
+  const item = asRecord(value);
+  const fields = asRecord(item.fields);
+  return compact({
+    id: item.id,
+    url: item.url,
+    type: fields[FIELDS.type],
+    title: fields[FIELDS.title],
+    state: fields[FIELDS.state],
+    assignee: personName(fields[FIELDS.assignee]),
+    fields: Object.keys(fields).length > 0 ? fields : undefined,
+  });
 }
 
 export function listItem(value: unknown): Record<string, unknown> {
@@ -245,6 +358,37 @@ function relations(value: unknown): Array<Record<string, unknown>> | undefined {
   });
 }
 
+export function linkRelations(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return value.map((relation) => {
+    const record = asRecord(relation);
+    const type = typeof record.rel === "string" ? record.rel : undefined;
+    const category = linkCategory(type);
+    const targetId = targetIdFromUrl(record.url);
+    return compact({
+      category,
+      type,
+      targetId,
+      id: targetId,
+      url: record.url,
+      attributes: record.attributes,
+    });
+  });
+}
+
+function linkCategory(type: string | undefined): string {
+  if (type === "System.LinkTypes.Hierarchy-Reverse") return "parent";
+  if (type === "System.LinkTypes.Hierarchy-Forward") return "child";
+  if (type === "System.LinkTypes.Related") return "related";
+  return "other";
+}
+
+function targetIdFromUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = value.match(/workItems\/(\d+)(?:$|[/?#])/i);
+  return match?.[1];
+}
+
 function personName(value: unknown): string | undefined {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") {
@@ -315,7 +459,7 @@ export function normalizeAzureError(
   if (/not found|does not exist|404/.test(text)) {
     return new AzdoAxiError(
       `Azure DevOps ${operation} resource was not found.`,
-      operation.startsWith("work-item show")
+      /work-item (show|links)/.test(operation)
         ? "WORK_ITEM_NOT_FOUND"
         : "AZ_RESOURCE_NOT_FOUND",
       ["Check the work-item ID and resolved organization/project context."],
