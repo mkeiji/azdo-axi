@@ -1,0 +1,37 @@
+{
+  "name": "azdo-axi",
+  "version": "0.1.0",
+  "description": "Agent-friendly Azure DevOps Boards CLI wrapper",
+  "type": "module",
+  "bin": {
+    "azdo-axi": "./dist/bin/azdo-axi.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "skills"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "check": "tsc --noEmit",
+    "format": "prettier --check README.md package.json tsconfig.json src test skills openspec/changes",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "tsx src/bin/azdo-axi.ts"
+  },
+  "dependencies": {
+    "@toon-format/toon": "^4.1.1",
+    "axi-sdk-js": "^0.1.11"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.12",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.11"
+  }
+}
