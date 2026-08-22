@@ -9,17 +9,20 @@ import {
 } from "./context.js";
 import { AzdoAxiError } from "./errors.js";
 import { VERSION } from "./version.js";
+import { listWorkItems, showWorkItem } from "./work-items.js";
 
 const TOP_LEVEL_HELP = `usage: azdo-axi <command> [args] [flags]
 commands:
   context                         Show the resolved Azure DevOps context
-  work-item list                  Prepare work-item listing
-  work-item show <id>             Prepare work-item inspection
+  work-item list                  List active Task work items
+  work-item show <id>             Show work-item details
   work-item create                Prepare work-item creation
   work-item update <id>           Prepare work-item update
   work-item links <id>            Prepare work-item link inspection
   query --wiql <query>            Prepare a WIQL query
 context flags: --organization <org> --project <project> [--team <team>] [--iteration <iteration>]
+list flags: --assignee <user> --iteration <path> --area <path> [--full]
+show flags: [--full]
 `;
 
 export interface CliDependencies {
@@ -58,8 +61,22 @@ export async function runCli(
     }),
     commands: {
       context: async (_args, context) => contextOutput(context),
-      "work-item": async (args, context) =>
-        unavailable(parseInvocation("work-item", args), context),
+      "work-item": async (args, context) => {
+        const invocation = parseInvocation("work-item", args);
+        if (!context) {
+          throw new AzdoAxiError(
+            "Azure DevOps context could not be resolved.",
+            "AZDO_CONTEXT_MISSING",
+          );
+        }
+        if (invocation.route === "work-item list") {
+          return listWorkItems(runner, context, invocation);
+        }
+        if (invocation.route === "work-item show") {
+          return showWorkItem(runner, context, invocation.id!, invocation);
+        }
+        return unavailable(invocation, context);
+      },
       query: async (args, context) =>
         unavailable(parseInvocation("query", args), context),
     },

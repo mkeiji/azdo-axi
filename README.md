@@ -32,15 +32,15 @@ Every routed command resolves its organization and project independently in this
 
 ```text
 azdo-axi context [--organization <org>] [--project <project>] [--team <team>] [--iteration <iteration>]
-azdo-axi work-item list
-azdo-axi work-item show <id>
+azdo-axi work-item list [--assignee <user>] [--iteration <path>] [--area <path>] [--full]
+azdo-axi work-item show <id> [--full]
 azdo-axi work-item create
 azdo-axi work-item update <id>
 azdo-axi work-item links <id>
 azdo-axi query --wiql "..."
 ```
 
-All route options are validated before Azure CLI preflight. `context` is available now; the work-item and WIQL routes currently validate and resolve their target, then report that their Board operation is not available yet. They do not read or mutate Azure DevOps data in this initial package slice.
+All route options are validated before Azure CLI preflight. `work-item list` reads active Task items and can filter by assignee, iteration, and area path; a configured context iteration is used when no list iteration is supplied. `work-item show <id>` includes available details and relationships. Responses are concise TOON with context and scope metadata. Large descriptions and history are bounded by default and can be returned in full with `--full`. These operations are read-only; mutation and WIQL routes remain unavailable.
 
 ## Pull-request review
 

@@ -15,11 +15,22 @@ export interface ParsedInvocation {
   project?: string;
   team?: string;
   iteration?: string;
+  assignee?: string;
+  area?: string;
+  full?: boolean;
   wiql?: string;
   id?: string;
 }
 
 const scopeFlags = new Set(["organization", "project", "team", "iteration"]);
+const workItemFilterFlags = new Set([
+  ...scopeFlags,
+  "assignee",
+  "assigned-to",
+  "area",
+  "area-path",
+  "full",
+]);
 
 export function parseInvocation(
   command: string,
@@ -58,32 +69,91 @@ export function parseInvocation(
     );
   }
 
-  const values = parseFlags(rest, scopeFlags);
+  const values = parseFlags(
+    rest,
+    action === "list"
+      ? workItemFilterFlags
+      : action === "show"
+        ? new Set([...scopeFlags, "full"])
+        : scopeFlags,
+    new Set(["full"]),
+  );
   if (action === "show" || action === "update" || action === "links") {
-    const id = positional(rest);
+    const id = positional(rest, new Set(["full"]));
     if (id.length !== 1) {
       throw validationError(
         `\`work-item ${action}\` requires exactly one work-item ID.`,
         [`Run \`azdo-axi work-item ${action} <id>\`.`],
       );
     }
-    return { route: `work-item ${action}` as Route, id: id[0], ...values };
+    return {
+      route: `work-item ${action}` as Route,
+      id: id[0],
+      ...canonicalWorkItemValues(values),
+    };
   }
 
-  const positions = positional(rest);
+  const positions = positional(rest, new Set(["full"]));
   if (positions.length > 0) {
     throw validationError(
       `\`work-item ${action}\` does not accept positional arguments.`,
     );
   }
-  return { route: `work-item ${action}` as Route, ...values };
+  return {
+    route: `work-item ${action}` as Route,
+    ...canonicalWorkItemValues(values),
+  };
+}
+
+function canonicalWorkItemValues(
+  values: Omit<ParsedInvocation, "route" | "id"> &
+    Record<string, string | boolean | undefined>,
+): Omit<ParsedInvocation, "route" | "id"> {
+  rejectConflictingAliases(values, "assignee", "assigned-to");
+  rejectConflictingAliases(values, "area", "area-path");
+
+  const assignee =
+    typeof values.assignee === "string"
+      ? values.assignee
+      : typeof values["assigned-to"] === "string"
+        ? values["assigned-to"]
+        : undefined;
+  const area =
+    typeof values.area === "string"
+      ? values.area
+      : typeof values["area-path"] === "string"
+        ? values["area-path"]
+        : undefined;
+  return {
+    ...(values.organization ? { organization: values.organization } : {}),
+    ...(values.project ? { project: values.project } : {}),
+    ...(values.team ? { team: values.team } : {}),
+    ...(values.iteration ? { iteration: values.iteration } : {}),
+    ...(assignee ? { assignee } : {}),
+    ...(area ? { area } : {}),
+    ...(values.full === true ? { full: true } : {}),
+  };
+}
+
+function rejectConflictingAliases(
+  values: Record<string, string | boolean | undefined>,
+  canonical: string,
+  alias: string,
+): void {
+  if (values[canonical] !== undefined && values[alias] !== undefined) {
+    throw validationError(
+      `Options --${canonical} and --${alias} cannot be used together.`,
+      [`Choose either --${canonical} or --${alias}, not both.`],
+    );
+  }
 }
 
 function parseFlags(
   args: string[],
   allowed: Set<string>,
+  booleanFlags: Set<string> = new Set(),
 ): Omit<ParsedInvocation, "route" | "id"> {
-  const result: Record<string, string> = {};
+  const result: Record<string, string | boolean> = {};
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg.startsWith("-")) {
@@ -101,13 +171,20 @@ function parseFlags(
     if (Object.hasOwn(result, name)) {
       throw validationError(`Option --${name} was provided more than once.`);
     }
+    if (booleanFlags.has(name)) {
+      if (inlineValue !== undefined) {
+        throw validationError(`Option --${name} does not accept a value.`);
+      }
+      result[name] = true;
+      continue;
+    }
     const value = inlineValue ?? args[++index];
     if (!value || value.startsWith("--")) {
       throw validationError(`Option --${name} requires a value.`);
     }
     result[name] = value;
   }
-  return result;
+  return result as Omit<ParsedInvocation, "route" | "id">;
 }
 
 function assertNoPositionals(args: string[], route: string): void {
@@ -119,14 +196,17 @@ function assertNoPositionals(args: string[], route: string): void {
   }
 }
 
-function positional(args: string[]): string[] {
+function positional(
+  args: string[],
+  booleanFlags = new Set<string>(),
+): string[] {
   const values: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     if (!args[index].startsWith("-")) {
       values.push(args[index]);
       continue;
     }
-    if (!args[index].includes("=")) {
+    if (!args[index].includes("=") && !booleanFlags.has(args[index].slice(2))) {
       index += 1;
     }
   }
