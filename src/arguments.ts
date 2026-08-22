@@ -1,3 +1,4 @@
+import { isValidFieldReferenceName } from "./field-validation.js";
 import { validationError } from "./errors.js";
 
 export type Route =
@@ -272,9 +273,9 @@ function parseCustomFields(
   for (const field of fields) {
     const separator = field.indexOf("=");
     const name = separator >= 0 ? field.slice(0, separator).trim() : "";
-    if (!name) {
+    if (!isValidFieldReferenceName(name)) {
       throw validationError(
-        "Each --field value must use `Reference.Name=value` syntax.",
+        "Each --field value must use a valid `Reference.Name=value` syntax.",
       );
     }
     if (Object.hasOwn(result, name)) {

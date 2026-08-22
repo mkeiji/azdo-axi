@@ -144,9 +144,32 @@ describe("work-item mutations", () => {
         parent: "not-an-id",
       }),
     ).toThrow("Parent work-item ID must be a positive integer");
+    expect(() =>
+      parseInvocation("work-item", [
+        "create",
+        "--type",
+        "Task",
+        "--title",
+        "Bad field",
+        "--field",
+        "not a reference=value",
+      ]),
+    ).toThrow("valid `Reference.Name=value` syntax");
+    expect(() =>
+      buildUpdateWorkItemArgs(context, "7", { "not a reference": "value" }),
+    ).toThrow("not a valid Azure DevOps reference name");
     expect(() => buildUpdateWorkItemArgs(context, "7", {})).toThrow(
       "At least one update field is required",
     );
+  });
+
+  it("preserves equals signs in custom field values", () => {
+    const args = buildCreateWorkItemArgs(context, {
+      workItemType: "CustomRequirement",
+      title: "Expression",
+      fields: { "Custom.Expression": "a=b=c" },
+    });
+    expect(args).toContain("Custom.Expression=a=b=c");
   });
 
   it("normalizes mutation authentication and permission failures", async () => {

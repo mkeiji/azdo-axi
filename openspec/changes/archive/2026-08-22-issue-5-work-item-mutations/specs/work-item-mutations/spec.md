@@ -1,8 +1,7 @@
 # work-item-mutations Specification
 
-## Purpose
-Provide safe, non-interactive Azure DevOps Boards work-item creation and updates for agents.
-## Requirements
+## MODIFIED Requirements
+
 ### Requirement: Create work items
 
 The system SHALL provide `azdo-axi work-item create` for standard work-item types including epics, features, user stories, tasks, and bugs, and SHALL pass custom types through when explicitly requested. The system SHALL reject custom field input unless each `--field` value uses a non-empty Azure DevOps reference-name followed by `=`, before issuing any create request. Reference names may contain letters, numbers, underscores, and dots and SHALL preserve the supplied value, including additional `=` characters.

@@ -1,5 +1,6 @@
 import type { CommandRunner } from "./az.js";
 import type { AzureDevOpsContext } from "./context.js";
+import { isValidFieldReferenceName } from "./field-validation.js";
 import { AzdoAxiError } from "./errors.js";
 
 export interface WorkItemReadOptions {
@@ -279,6 +280,14 @@ function sameTags(actual: unknown, desired: string): boolean {
 }
 
 function fieldArgs(fields: Record<string, string>): string[] {
+  for (const name of Object.keys(fields)) {
+    if (!isValidFieldReferenceName(name)) {
+      throw new AzdoAxiError(
+        `Field ${name || "<empty>"} is not a valid Azure DevOps reference name.`,
+        "VALIDATION_ERROR",
+      );
+    }
+  }
   const entries = Object.entries(fields).map(
     ([name, value]) => `${name}=${value}`,
   );
