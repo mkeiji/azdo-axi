@@ -17,6 +17,11 @@ The system SHALL provide an installable `azdo-axi` command with routes for `cont
 - **WHEN** a caller supplies an option not accepted by the selected route
 - **THEN** the system SHALL fail before executing an Azure CLI command and identify the unsupported option
 
+#### Scenario: Unexpected positional argument
+
+- **WHEN** a caller supplies a positional argument to a route that defines no positional arguments
+- **THEN** the system SHALL fail before executing an Azure CLI command and identify the unexpected argument
+
 #### Scenario: Clean package installation
 
 - **WHEN** a package is packed from a checkout with no existing `dist` directory and then installed

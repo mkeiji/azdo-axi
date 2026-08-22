@@ -26,11 +26,13 @@ export function parseInvocation(
   args: string[],
 ): ParsedInvocation {
   if (command === "context") {
+    assertNoPositionals(args, "`context`");
     const values = parseFlags(args, scopeFlags);
     return { route: "context", ...values };
   }
 
   if (command === "query") {
+    assertNoPositionals(args, "`query`");
     const values = parseFlags(args, new Set([...scopeFlags, "wiql"]));
     if (!values.wiql) {
       throw validationError("`query` requires `--wiql <query>`.", [
@@ -106,6 +108,15 @@ function parseFlags(
     result[name] = value;
   }
   return result;
+}
+
+function assertNoPositionals(args: string[], route: string): void {
+  const values = positional(args);
+  if (values.length > 0) {
+    throw validationError(
+      `${route} does not accept positional arguments: ${values.join(", ")}.`,
+    );
+  }
 }
 
 function positional(args: string[]): string[] {

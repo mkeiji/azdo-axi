@@ -173,6 +173,19 @@ describe("argument safety", () => {
     ).toBe("query");
   });
 
+  it("rejects unexpected positional values on option-only routes", () => {
+    expect(() => parseInvocation("context", ["unintended"])).toThrow(
+      "does not accept positional arguments: unintended",
+    );
+    expect(() =>
+      parseInvocation("query", [
+        "--wiql",
+        "SELECT [System.Id] FROM WorkItems",
+        "unintended",
+      ]),
+    ).toThrow("does not accept positional arguments: unintended");
+  });
+
   it("requires WIQL before Azure CLI is invoked", () => {
     expect(() => parseInvocation("query", [])).toThrow("requires `--wiql");
   });
