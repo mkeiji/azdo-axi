@@ -14,7 +14,7 @@ export class NodeAzRunner implements CommandRunner {
     try {
       const { stdout } = await execFileAsync("az", [...args], {
         encoding: "utf8",
-        maxBuffer: 1024 * 1024,
+        maxBuffer: 16 * 1024 * 1024,
         windowsHide: true,
       });
       return stdout;
