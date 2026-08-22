@@ -109,6 +109,9 @@ function canonicalWorkItemValues(
   values: Omit<ParsedInvocation, "route" | "id"> &
     Record<string, string | boolean | undefined>,
 ): Omit<ParsedInvocation, "route" | "id"> {
+  rejectConflictingAliases(values, "assignee", "assigned-to");
+  rejectConflictingAliases(values, "area", "area-path");
+
   const assignee =
     typeof values.assignee === "string"
       ? values.assignee
@@ -130,6 +133,19 @@ function canonicalWorkItemValues(
     ...(area ? { area } : {}),
     ...(values.full === true ? { full: true } : {}),
   };
+}
+
+function rejectConflictingAliases(
+  values: Record<string, string | boolean | undefined>,
+  canonical: string,
+  alias: string,
+): void {
+  if (values[canonical] !== undefined && values[alias] !== undefined) {
+    throw validationError(
+      `Options --${canonical} and --${alias} cannot be used together.`,
+      [`Choose either --${canonical} or --${alias}, not both.`],
+    );
+  }
 }
 
 function parseFlags(

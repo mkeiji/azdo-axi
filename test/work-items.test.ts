@@ -183,6 +183,36 @@ describe("work-item reads", () => {
     ).toThrow("Unsupported option: --assignee");
   });
 
+  it.each([
+    ["Ada", "Ada"],
+    ["Ada", "Grace"],
+  ])("rejects conflicting assignee aliases (%s / %s)", (assignee, alias) => {
+    expect(() =>
+      parseInvocation("work-item", [
+        "list",
+        "--assignee",
+        assignee,
+        "--assigned-to",
+        alias,
+      ]),
+    ).toThrow("Options --assignee and --assigned-to cannot be used together");
+  });
+
+  it.each([
+    ["Product", "Product"],
+    ["Product", "Platform"],
+  ])("rejects conflicting area aliases (%s / %s)", (area, alias) => {
+    expect(() =>
+      parseInvocation("work-item", [
+        "list",
+        "--area",
+        area,
+        "--area-path",
+        alias,
+      ]),
+    ).toThrow("Options --area and --area-path cannot be used together");
+  });
+
   it("requests relations and JSON when showing a work item", async () => {
     const calls: string[][] = [];
     await showWorkItem(
