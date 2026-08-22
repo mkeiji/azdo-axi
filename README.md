@@ -40,7 +40,7 @@ azdo-axi work-item links <id>
 azdo-axi query --wiql "..."
 ```
 
-All route options are validated before Azure CLI preflight. `work-item list` reads active Task items and can filter by assignee, iteration, and area path; a configured context iteration is used when no list iteration is supplied. `work-item show <id>` includes available details and relationships. Responses are concise TOON with context and scope metadata. Large descriptions and history are bounded by default and can be returned in full with `--full`. These operations are read-only; mutation and WIQL routes remain unavailable.
+All route options are validated before Azure CLI preflight. `work-item list` reads active Task items and can filter by assignee, iteration, and area path; a configured context iteration is used when no list iteration is supplied. `work-item show <id>` includes available details and relationships, while `work-item links <id>` returns parent, child, and related links. `query --wiql` is the advanced raw-WIQL escape hatch for custom queries and fields. Responses are concise TOON with context and scope metadata, including an explicit zero count for empty results. Large descriptions and history are bounded by default and can be returned in full with `--full`. These operations are read-only; mutation routes remain unavailable.
 
 ## Pull-request review
 

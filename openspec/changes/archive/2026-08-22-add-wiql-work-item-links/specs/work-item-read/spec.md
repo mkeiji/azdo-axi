@@ -1,8 +1,5 @@
-# work-item-read Specification
+## MODIFIED Requirements
 
-## Purpose
-Provide safe, read-only Azure DevOps Boards work-item reads in concise agent-oriented output.
-## Requirements
 ### Requirement: Read-only work-item routes
 
 The system SHALL provide `azdo-axi work-item list`, `azdo-axi work-item show <id>`, and `azdo-axi work-item links <id>` without creating, updating, or linking work items.

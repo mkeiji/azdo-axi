@@ -9,7 +9,12 @@ import {
 } from "./context.js";
 import { AzdoAxiError } from "./errors.js";
 import { VERSION } from "./version.js";
-import { listWorkItems, showWorkItem } from "./work-items.js";
+import {
+  linkWorkItem,
+  listWorkItems,
+  queryWorkItems,
+  showWorkItem,
+} from "./work-items.js";
 
 const TOP_LEVEL_HELP = `usage: azdo-axi <command> [args] [flags]
 commands:
@@ -75,10 +80,21 @@ export async function runCli(
         if (invocation.route === "work-item show") {
           return showWorkItem(runner, context, invocation.id!, invocation);
         }
+        if (invocation.route === "work-item links") {
+          return linkWorkItem(runner, context, invocation.id!);
+        }
         return unavailable(invocation, context);
       },
-      query: async (args, context) =>
-        unavailable(parseInvocation("query", args), context),
+      query: async (args, context) => {
+        const invocation = parseInvocation("query", args);
+        if (!context) {
+          throw new AzdoAxiError(
+            "Azure DevOps context could not be resolved.",
+            "AZDO_CONTEXT_MISSING",
+          );
+        }
+        return queryWorkItems(runner, context, invocation.wiql!);
+      },
     },
   });
 }

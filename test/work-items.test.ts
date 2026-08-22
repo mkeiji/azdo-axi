@@ -5,8 +5,11 @@ import { parseInvocation } from "../src/arguments.js";
 import {
   buildListWiql,
   detailItem,
+  linkRelations,
+  linkWorkItem,
   listWorkItems,
   normalizeAzureError,
+  queryWorkItems,
   showWorkItem,
 } from "../src/work-items.js";
 
@@ -251,5 +254,130 @@ describe("work-item reads", () => {
     expect(calls[0]).toEqual(
       expect.arrayContaining(["--expand", "relations", "--output", "json"]),
     );
+  });
+
+  it("executes raw WIQL and preserves custom fields and scope", async () => {
+    const calls: string[][] = [];
+    const result = await queryWorkItems(
+      runnerFor(
+        [
+          {
+            id: 17,
+            url: "https://dev.azure.com/example/_apis/wit/workItems/17",
+            fields: {
+              "System.WorkItemType": "CustomRequirement",
+              "System.Title": "A custom item",
+              "Custom.Risk": "high",
+            },
+          },
+        ],
+        calls,
+      ),
+      context,
+      "SELECT [System.Id], [Custom.Risk] FROM WorkItems",
+    );
+    expect(result).toMatchObject({
+      scope: {
+        organization: context.organization,
+        project: context.project,
+        team: context.team,
+      },
+      count: 1,
+      items: [
+        {
+          id: 17,
+          type: "CustomRequirement",
+          fields: { "Custom.Risk": "high" },
+        },
+      ],
+    });
+    expect(calls[0]).toEqual(
+      expect.arrayContaining([
+        "boards",
+        "query",
+        "--wiql",
+        "SELECT [System.Id], [Custom.Risk] FROM WorkItems",
+        "--organization",
+        context.organization,
+        "--project",
+        context.project,
+        "--output",
+        "json",
+      ]),
+    );
+  });
+
+  it("reports an explicit empty query result and applied scope", async () => {
+    const result = await queryWorkItems(
+      runnerFor([], []),
+      context,
+      "SELECT [System.Id] FROM WorkItems WHERE [System.Id] = 999999",
+    );
+    expect(result).toMatchObject({
+      count: 0,
+      scope: {
+        organization: context.organization,
+        project: context.project,
+        wiql: "SELECT [System.Id] FROM WorkItems WHERE [System.Id] = 999999",
+      },
+    });
+  });
+
+  it("maps parent, child, related, and unknown links", () => {
+    expect(
+      linkRelations([
+        {
+          rel: "System.LinkTypes.Hierarchy-Reverse",
+          url: "https://dev.azure.com/example/_apis/wit/workItems/1",
+        },
+        {
+          rel: "System.LinkTypes.Hierarchy-Forward",
+          url: "https://dev.azure.com/example/_apis/wit/workItems/2",
+        },
+        {
+          rel: "System.LinkTypes.Related",
+          url: "https://dev.azure.com/example/_apis/wit/workItems/3",
+        },
+        { rel: "System.LinkTypes.Dependency-Forward", url: "custom-url" },
+      ]),
+    ).toMatchObject([
+      { category: "parent", targetId: "1" },
+      { category: "child", targetId: "2" },
+      { category: "related", targetId: "3" },
+      { category: "other", url: "custom-url" },
+    ]);
+  });
+
+  it("returns empty links and custom source fields", async () => {
+    const result = await linkWorkItem(
+      runnerFor(
+        {
+          id: 7,
+          fields: {
+            "System.WorkItemType": "CustomRequirement",
+            "Custom.Risk": "high",
+          },
+        },
+        [],
+      ),
+      context,
+      "7",
+    );
+    expect(result).toMatchObject({
+      workItemId: "7",
+      count: 0,
+      links: [],
+      item: { fields: { "Custom.Risk": "high" } },
+    });
+  });
+
+  it("normalizes link lookup failures as work-item failures", async () => {
+    const runner: CommandRunner = {
+      run: async () => Promise.reject(new Error("work item 7 not found")),
+    };
+    await expect(linkWorkItem(runner, context, "7")).rejects.toMatchObject({
+      code: "WORK_ITEM_NOT_FOUND",
+      suggestions: [expect.stringContaining("work-item ID")],
+    });
   });
 });
