@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { CommandRunner } from "../src/az.js";
 import { parseInvocation } from "../src/arguments.js";
 import {
+  buildListWiql,
   detailItem,
   listWorkItems,
   normalizeAzureError,
@@ -68,36 +69,50 @@ describe("work-item reads", () => {
         },
       ],
     });
+    expect(calls[0]?.slice(0, 2)).toEqual(["boards", "query"]);
     expect(calls[0]).toEqual(
       expect.arrayContaining([
         "--organization",
         context.organization,
         "--project",
         context.project,
-        "--state",
-        "Active",
-        "--type",
-        "Task",
-        "--assigned-to",
-        "Ada",
-        "--iteration",
-        "Sprint 2",
-        "--area",
-        "Product",
         "--output",
         "json",
       ]),
     );
+    const wiql = calls[0]?.[calls[0].indexOf("--wiql") + 1];
+    expect(wiql).toContain("[System.WorkItemType] = 'Task'");
+    expect(wiql).toContain("[System.State] = 'Active'");
+    expect(wiql).toContain("[System.AssignedTo] = 'Ada'");
+    expect(wiql).toContain("[System.IterationPath] = 'Sprint 2'");
+    expect(wiql).toContain("[System.AreaPath] = 'Product'");
+    expect(wiql).not.toContain("--iteration");
+    expect(wiql).not.toContain("--area");
   });
 
   it("uses context iteration and reports empty results explicitly", async () => {
-    const result = await listWorkItems(runnerFor([], []), context, {});
+    const calls: string[][] = [];
+    const result = await listWorkItems(runnerFor([], calls), context, {});
     expect(result.count).toBe(0);
     expect(result.scope).toMatchObject({
       iteration: "Sprint 1",
       state: "Active",
       type: "Task",
     });
+    const wiql = calls[0]?.[calls[0].indexOf("--wiql") + 1];
+    expect(wiql).toContain("[System.IterationPath] = 'Sprint 1'");
+  });
+
+  it("builds separate iteration and area WIQL predicates and escapes literals", () => {
+    const wiql = buildListWiql({
+      iteration: "Product\\Sprint O'Brien",
+      area: "Product\\People's Tools",
+    });
+    expect(wiql).toContain(
+      "[System.IterationPath] = 'Product\\Sprint O''Brien'",
+    );
+    expect(wiql).toContain("[System.AreaPath] = 'Product\\People''s Tools'");
+    expect(wiql).not.toContain("work-item list");
   });
 
   it("maps details, estimates, tags, and relationships", () => {

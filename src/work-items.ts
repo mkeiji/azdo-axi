@@ -67,24 +67,17 @@ export async function listWorkItems(
   };
   const args = [
     "boards",
-    "work-item",
-    "list",
+    "query",
+    "--wiql",
+    buildListWiql({ assignee, iteration, area }),
     "--organization",
     context.organization,
     "--project",
     context.project,
-    "--state",
-    "Active",
-    "--type",
-    "Task",
     "--output",
     "json",
     "--only-show-errors",
   ];
-  if (context.team) args.push("--team", context.team);
-  if (assignee) args.push("--assigned-to", assignee);
-  if (iteration) args.push("--iteration", iteration);
-  if (area) args.push("--area", area);
 
   const raw = await runAzureJson(runner, args, "work-item list");
   if (!Array.isArray(raw)) {
@@ -126,6 +119,37 @@ export async function showWorkItem(
     context,
     item: detailItem(raw as Record<string, unknown>, Boolean(options.full)),
   };
+}
+
+export function buildListWiql(options: WorkItemReadOptions = {}): string {
+  const predicates = [
+    "[System.TeamProject] = @project",
+    "[System.WorkItemType] = 'Task'",
+    "[System.State] = 'Active'",
+  ];
+  if (options.assignee) {
+    predicates.push(
+      `[System.AssignedTo] = '${escapeWiqlLiteral(options.assignee)}'`,
+    );
+  }
+  if (options.iteration) {
+    predicates.push(
+      `[System.IterationPath] = '${escapeWiqlLiteral(options.iteration)}'`,
+    );
+  }
+  if (options.area) {
+    predicates.push(`[System.AreaPath] = '${escapeWiqlLiteral(options.area)}'`);
+  }
+  return [
+    "SELECT [System.Id], [System.WorkItemType], [System.Title], [System.State], [System.AssignedTo]",
+    "FROM WorkItems",
+    `WHERE ${predicates.join(" AND ")}`,
+    "ORDER BY [System.Id]",
+  ].join(" ");
+}
+
+function escapeWiqlLiteral(value: string): string {
+  return value.replaceAll("'", "''");
 }
 
 export function listItem(value: unknown): Record<string, unknown> {
