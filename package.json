@@ -16,6 +16,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
     "check": "tsc --noEmit",
     "format": "prettier --check README.md package.json tsconfig.json src test skills openspec/changes",
     "test": "vitest run",
