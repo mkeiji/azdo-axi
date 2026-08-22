@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import type { CommandRunner } from "../src/az.js";
 import { parseInvocation } from "../src/arguments.js";
 import {
+  buildCreateWorkItemArgs,
   buildListWiql,
+  buildUpdateWorkItemArgs,
+  createWorkItem,
   detailItem,
   linkRelations,
   linkWorkItem,
@@ -11,6 +14,7 @@ import {
   normalizeAzureError,
   queryWorkItems,
   showWorkItem,
+  updateWorkItem,
 } from "../src/work-items.js";
 
 const context = {
@@ -25,6 +29,138 @@ function runnerFor(output: unknown, calls: string[][]): CommandRunner {
     run: async (args) => (calls.push([...args]), JSON.stringify(output)),
   };
 }
+
+describe("work-item mutations", () => {
+  it("builds a task create payload with parent, common, and custom fields", () => {
+    const args = buildCreateWorkItemArgs(context, {
+      workItemType: "Task",
+      title: "Ship it",
+      description: "Do the thing",
+      parent: "41",
+      iteration: "Product\\Sprint 2",
+      assignee: "Ada",
+      fields: { "Custom.Risk": "high" },
+    });
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "boards",
+        "work-item",
+        "create",
+        "--type",
+        "Task",
+        "--title",
+        "Ship it",
+        "--fields",
+        "System.Description=Do the thing",
+        "System.Parent=41",
+        "System.IterationPath=Product\\Sprint 2",
+        "System.AssignedTo=Ada",
+        "Custom.Risk=high",
+        "--organization",
+        context.organization,
+        "--project",
+        context.project,
+        "--output",
+        "json",
+      ]),
+    );
+  });
+
+  it("updates a bug and returns the resulting target envelope", async () => {
+    const calls: string[][] = [];
+    const result = await updateWorkItem(
+      runnerFor(
+        {
+          id: 9,
+          fields: {
+            "System.WorkItemType": "Bug",
+            "System.Title": "Broken",
+            "System.State": "Active",
+            "System.Tags": "old",
+          },
+        },
+        calls,
+      ),
+      context,
+      "9",
+      { state: "Resolved", tags: "security; urgent", assignee: "Ada" },
+    );
+    expect(result).toMatchObject({
+      organization: context.organization,
+      project: context.project,
+      workItemId: 9,
+      operation: "update",
+      noOp: false,
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual(
+      expect.arrayContaining([
+        "boards",
+        "work-item",
+        "update",
+        "--id",
+        "9",
+        "System.State=Resolved",
+        "System.Tags=security; urgent",
+        "System.AssignedTo=Ada",
+        "--organization",
+        context.organization,
+        "--project",
+        context.project,
+      ]),
+    );
+  });
+
+  it("returns a safe no-op without issuing an update", async () => {
+    const calls: string[][] = [];
+    const result = await updateWorkItem(
+      runnerFor(
+        {
+          id: 9,
+          fields: {
+            "System.State": "Resolved",
+            "System.Tags": "urgent; security",
+            "System.AssignedTo": { displayName: "Ada" },
+          },
+        },
+        calls,
+      ),
+      context,
+      "9",
+      { state: "Resolved", tags: "security; urgent", assignee: "Ada" },
+    );
+    expect(result.noOp).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rejects invalid mutation payloads before Azure writes", () => {
+    expect(() => parseInvocation("work-item", ["delete", "9"])).toThrow(
+      "requires one of: list, show, create, update, links",
+    );
+    expect(() =>
+      buildCreateWorkItemArgs(context, {
+        workItemType: "Task",
+        title: "Bad parent",
+        parent: "not-an-id",
+      }),
+    ).toThrow("Parent work-item ID must be a positive integer");
+    expect(() => buildUpdateWorkItemArgs(context, "7", {})).toThrow(
+      "At least one update field is required",
+    );
+  });
+
+  it("normalizes mutation authentication and permission failures", async () => {
+    const runner: CommandRunner = {
+      run: async () => Promise.reject(new Error("403 Forbidden")),
+    };
+    await expect(
+      createWorkItem(runner, context, {
+        workItemType: "Bug",
+        title: "Cannot create",
+      }),
+    ).rejects.toMatchObject({ code: "AZ_PERMISSION_DENIED" });
+  });
+});
 
 describe("work-item reads", () => {
   it("builds active task filters from explicit values and returns concise list fields", async () => {

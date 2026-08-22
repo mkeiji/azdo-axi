@@ -10,10 +10,12 @@ import {
 import { AzdoAxiError } from "./errors.js";
 import { VERSION } from "./version.js";
 import {
+  createWorkItem,
   linkWorkItem,
   listWorkItems,
   queryWorkItems,
   showWorkItem,
+  updateWorkItem,
 } from "./work-items.js";
 
 const TOP_LEVEL_HELP = `usage: azdo-axi <command> [args] [flags]
@@ -21,13 +23,15 @@ commands:
   context                         Show the resolved Azure DevOps context
   work-item list                  List active Task work items
   work-item show <id>             Show work-item details
-  work-item create                Prepare work-item creation
-  work-item update <id>           Prepare work-item update
+  work-item create                Create a work item
+  work-item update <id>           Update a work item
   work-item links <id>            Prepare work-item link inspection
   query --wiql <query>            Prepare a WIQL query
 context flags: --organization <org> --project <project> [--team <team>] [--iteration <iteration>]
 list flags: --assignee <user> --iteration <path> --area <path> [--full]
 show flags: [--full]
+create flags: --type <type> --title <title> [--description <text>] [--parent <id>] [--iteration <path>] [--assignee <user>] [--area <path>] [--field <name=value>]...
+update flags: [--title <title>] [--description <text>] [--state <state>] [--tags <tags>] [--assignee <user>] [--iteration <path>] [--area <path>] [--field <name=value>]...
 `;
 
 export interface CliDependencies {
@@ -82,6 +86,12 @@ export async function runCli(
         }
         if (invocation.route === "work-item links") {
           return linkWorkItem(runner, context, invocation.id!);
+        }
+        if (invocation.route === "work-item create") {
+          return createWorkItem(runner, context, invocation);
+        }
+        if (invocation.route === "work-item update") {
+          return updateWorkItem(runner, context, invocation.id!, invocation);
         }
         return unavailable(invocation, context);
       },

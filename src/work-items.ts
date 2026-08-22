@@ -43,6 +43,32 @@ export interface WorkItemLinksResult extends Record<string, unknown> {
   item?: Record<string, unknown>;
 }
 
+export interface WorkItemMutationOptions {
+  workItemType?: string;
+  title?: string;
+  description?: string;
+  parent?: string;
+  iteration?: string;
+  assignee?: string;
+  area?: string;
+  state?: string;
+  tags?: string;
+  fields?: Record<string, string>;
+}
+
+export interface WorkItemMutationResult extends Record<string, unknown> {
+  context: AzureDevOpsContext;
+  organization: string;
+  project: string;
+  operation: "create" | "update";
+  workItemId: string | number;
+  noOp: boolean;
+  type?: string;
+  title?: string;
+  state?: string;
+  item: Record<string, unknown>;
+}
+
 const DEFAULT_TEXT_LIMIT = 2_000;
 const DEFAULT_HISTORY_LIMIT = 20;
 const FIELDS = {
@@ -54,6 +80,7 @@ const FIELDS = {
   acceptanceCriteria: "Microsoft.VSTS.Common.AcceptanceCriteria",
   area: "System.AreaPath",
   iteration: "System.IterationPath",
+  parent: "System.Parent",
   tags: "System.Tags",
   effort: "Microsoft.VSTS.Scheduling.Effort",
   storyPoints: "Microsoft.VSTS.Scheduling.StoryPoints",
@@ -62,6 +89,293 @@ const FIELDS = {
   completedWork: "Microsoft.VSTS.Scheduling.CompletedWork",
   history: "System.History",
 } as const;
+
+export function buildCreateWorkItemArgs(
+  context: AzureDevOpsContext,
+  options: WorkItemMutationOptions,
+): string[] {
+  if (!options.workItemType) {
+    throw new AzdoAxiError("A work-item type is required.", "VALIDATION_ERROR");
+  }
+  if (!options.title) {
+    throw new AzdoAxiError(
+      "A work-item title is required.",
+      "VALIDATION_ERROR",
+    );
+  }
+  if (options.parent !== undefined) validateParentId(options.parent);
+  assertReservedCreateFields(options.fields);
+  const fields = mutationFields(options, true);
+  return [
+    "boards",
+    "work-item",
+    "create",
+    "--type",
+    options.workItemType,
+    "--title",
+    options.title,
+    ...fieldArgs(fields),
+    "--organization",
+    context.organization,
+    "--project",
+    context.project,
+    "--output",
+    "json",
+    "--only-show-errors",
+  ];
+}
+
+export function buildUpdateWorkItemArgs(
+  context: AzureDevOpsContext,
+  id: string,
+  fields: Record<string, string>,
+): string[] {
+  if (!/^\d+$/.test(id) || Number(id) <= 0) {
+    throw new AzdoAxiError(
+      "A work-item ID must be a positive integer.",
+      "VALIDATION_ERROR",
+    );
+  }
+  if (Object.keys(fields).length === 0) {
+    throw new AzdoAxiError(
+      "At least one update field is required.",
+      "VALIDATION_ERROR",
+    );
+  }
+  return [
+    "boards",
+    "work-item",
+    "update",
+    "--id",
+    id,
+    ...fieldArgs(fields),
+    "--organization",
+    context.organization,
+    "--project",
+    context.project,
+    "--output",
+    "json",
+    "--only-show-errors",
+  ];
+}
+
+export async function createWorkItem(
+  runner: CommandRunner,
+  context: AzureDevOpsContext,
+  options: WorkItemMutationOptions,
+): Promise<WorkItemMutationResult> {
+  const raw = await runAzureJson(
+    runner,
+    buildCreateWorkItemArgs(context, options),
+    "work-item create",
+  );
+  assertMutationObject(raw, "work-item create");
+  return mutationResult(context, "create", raw, false);
+}
+
+export async function updateWorkItem(
+  runner: CommandRunner,
+  context: AzureDevOpsContext,
+  id: string,
+  options: WorkItemMutationOptions,
+): Promise<WorkItemMutationResult> {
+  validateWorkItemId(id);
+  const requested = mutationFields(options, false);
+  if (Object.keys(requested).length === 0) {
+    throw new AzdoAxiError(
+      "At least one update field is required.",
+      "VALIDATION_ERROR",
+    );
+  }
+  const current = await readRawWorkItem(
+    runner,
+    context,
+    id,
+    "work-item update",
+  );
+  const fields = changedMutationFields(current, requested);
+  if (Object.keys(fields).length === 0) {
+    return mutationResult(context, "update", current, true, id);
+  }
+  const raw = await runAzureJson(
+    runner,
+    buildUpdateWorkItemArgs(context, id, fields),
+    `work-item update ${id}`,
+  );
+  assertMutationObject(raw, `work-item update ${id}`);
+  return mutationResult(context, "update", raw, false, id);
+}
+
+function assertReservedCreateFields(
+  fields: Record<string, string> | undefined,
+): void {
+  for (const name of [FIELDS.type, FIELDS.title]) {
+    if (fields && Object.hasOwn(fields, name)) {
+      throw new AzdoAxiError(
+        `Field ${name} cannot be combined with the create type or title option.`,
+        "VALIDATION_ERROR",
+      );
+    }
+  }
+}
+
+function mutationFields(
+  options: WorkItemMutationOptions,
+  creating: boolean,
+): Record<string, string> {
+  const fields: Record<string, string> = { ...(options.fields ?? {}) };
+  const standard: Record<string, string | undefined> = {
+    ...(creating ? {} : { [FIELDS.title]: options.title }),
+    [FIELDS.description]: options.description,
+    [FIELDS.parent]: options.parent,
+    [FIELDS.iteration]: options.iteration,
+    [FIELDS.assignee]: options.assignee,
+    [FIELDS.area]: options.area,
+    [FIELDS.state]: options.state,
+    [FIELDS.tags]: options.tags,
+  };
+  for (const [name, value] of Object.entries(standard)) {
+    if (value === undefined) continue;
+    if (Object.hasOwn(fields, name)) {
+      throw new AzdoAxiError(
+        `Field ${name} was provided both as a standard option and a custom field.`,
+        "VALIDATION_ERROR",
+      );
+    }
+    fields[name] = value;
+  }
+  return fields;
+}
+
+function changedMutationFields(
+  current: Record<string, unknown>,
+  requested: Record<string, string>,
+): Record<string, string> {
+  const currentFields = asRecord(current.fields);
+  return Object.fromEntries(
+    Object.entries(requested).filter(([name, desired]) => {
+      const actual = currentFields[name];
+      if (name === FIELDS.tags) {
+        return !sameTags(actual, desired);
+      }
+      if (name === FIELDS.assignee) {
+        return personName(actual) !== desired;
+      }
+      return String(actual ?? "") !== desired;
+    }),
+  );
+}
+
+function sameTags(actual: unknown, desired: string): boolean {
+  const normalize = (value: unknown): string[] =>
+    String(value ?? "")
+      .split(";")
+      .map((tag) => tag.trim())
+      .filter(Boolean)
+      .sort();
+  return (
+    JSON.stringify(normalize(actual)) === JSON.stringify(normalize(desired))
+  );
+}
+
+function fieldArgs(fields: Record<string, string>): string[] {
+  const entries = Object.entries(fields).map(
+    ([name, value]) => `${name}=${value}`,
+  );
+  return entries.length > 0 ? ["--fields", ...entries] : [];
+}
+
+function validateParentId(id: string): void {
+  validateWorkItemId(id, "Parent work-item ID");
+}
+
+function validateWorkItemId(id: string, label = "Work-item ID"): void {
+  if (!/^\d+$/.test(id) || Number(id) <= 0) {
+    throw new AzdoAxiError(
+      `${label} must be a positive integer.`,
+      "VALIDATION_ERROR",
+    );
+  }
+}
+
+async function readRawWorkItem(
+  runner: CommandRunner,
+  context: AzureDevOpsContext,
+  id: string,
+  operation: string,
+): Promise<Record<string, unknown>> {
+  const raw = await runAzureJson(
+    runner,
+    [
+      "boards",
+      "work-item",
+      "show",
+      "--id",
+      id,
+      "--organization",
+      context.organization,
+      "--project",
+      context.project,
+      "--expand",
+      "relations",
+      "--output",
+      "json",
+      "--only-show-errors",
+    ],
+    operation,
+  );
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw invalidOutput(`${operation} returned an invalid object`);
+  }
+  return raw as Record<string, unknown>;
+}
+
+function assertMutationObject(
+  raw: unknown,
+  operation: string,
+): asserts raw is Record<string, unknown> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw invalidOutput(`${operation} returned an invalid object`);
+  }
+}
+
+function mutationResult(
+  context: AzureDevOpsContext,
+  operation: "create" | "update",
+  raw: unknown,
+  noOp: boolean,
+  fallbackId?: string,
+): WorkItemMutationResult {
+  const item = asRecord(raw);
+  const fields = asRecord(item.fields);
+  const workItemId = item.id ?? fallbackId ?? "unknown";
+  const detail = detailItem(item, false);
+  if (Object.keys(fields).length > 0) detail.fields = fields;
+  const type: string | undefined =
+    typeof fields[FIELDS.type] === "string"
+      ? String(fields[FIELDS.type])
+      : undefined;
+  const title: string | undefined =
+    typeof fields[FIELDS.title] === "string"
+      ? String(fields[FIELDS.title])
+      : undefined;
+  const state: string | undefined =
+    typeof fields[FIELDS.state] === "string"
+      ? String(fields[FIELDS.state])
+      : undefined;
+  return {
+    context,
+    organization: context.organization,
+    project: context.project,
+    operation,
+    workItemId: workItemId as string | number,
+    noOp,
+    ...(type ? { type } : {}),
+    ...(title ? { title } : {}),
+    ...(state ? { state } : {}),
+    item: detail,
+  };
+}
 
 export async function listWorkItems(
   runner: CommandRunner,
@@ -147,29 +461,15 @@ export async function showWorkItem(
   id: string,
   options: Pick<WorkItemReadOptions, "full">,
 ): Promise<Record<string, unknown>> {
-  const args = [
-    "boards",
-    "work-item",
-    "show",
-    "--id",
+  const raw = await readRawWorkItem(
+    runner,
+    context,
     id,
-    "--organization",
-    context.organization,
-    "--project",
-    context.project,
-    "--expand",
-    "relations",
-    "--output",
-    "json",
-    "--only-show-errors",
-  ];
-  const raw = await runAzureJson(runner, args, `work-item show ${id}`);
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw invalidOutput("work-item show returned an invalid object");
-  }
+    `work-item show ${id}`,
+  );
   return {
     context,
-    item: detailItem(raw as Record<string, unknown>, Boolean(options.full)),
+    item: detailItem(raw, Boolean(options.full)),
   };
 }
 
@@ -459,7 +759,7 @@ export function normalizeAzureError(
   if (/not found|does not exist|404/.test(text)) {
     return new AzdoAxiError(
       `Azure DevOps ${operation} resource was not found.`,
-      /work-item (show|links)/.test(operation)
+      /work-item (show|links|update)/.test(operation)
         ? "WORK_ITEM_NOT_FOUND"
         : "AZ_RESOURCE_NOT_FOUND",
       ["Check the work-item ID and resolved organization/project context."],

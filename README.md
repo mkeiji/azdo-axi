@@ -34,13 +34,13 @@ Every routed command resolves its organization and project independently in this
 azdo-axi context [--organization <org>] [--project <project>] [--team <team>] [--iteration <iteration>]
 azdo-axi work-item list [--assignee <user>] [--iteration <path>] [--area <path>] [--full]
 azdo-axi work-item show <id> [--full]
-azdo-axi work-item create
-azdo-axi work-item update <id>
+azdo-axi work-item create --type <type> --title <title> [--description <text>] [--parent <id>] [--iteration <path>] [--assignee <user>] [--field <name=value>]...
+azdo-axi work-item update <id> [--title <title>] [--description <text>] [--state <state>] [--tags <tags>] [--assignee <user>] [--field <name=value>]...
 azdo-axi work-item links <id>
 azdo-axi query --wiql "..."
 ```
 
-All route options are validated before Azure CLI preflight. `work-item list` reads active Task items and can filter by assignee, iteration, and area path; a configured context iteration is used when no list iteration is supplied. `work-item show <id>` includes available details and relationships, while `work-item links <id>` returns parent, child, and related links. `query --wiql` is the advanced raw-WIQL escape hatch for custom queries and fields. Responses are concise TOON with context and scope metadata, including an explicit zero count for empty results. Large descriptions and history are bounded by default and can be returned in full with `--full`. These operations are read-only; mutation routes remain unavailable.
+All route options are validated before Azure CLI preflight. `work-item list` reads active Task items and can filter by assignee, iteration, and area path; a configured context iteration is used when no list iteration is supplied. `work-item show <id>` includes available details and relationships, while `work-item links <id>` returns parent, child, and related links. `query --wiql` is the advanced raw-WIQL escape hatch for custom queries and fields. Responses are concise TOON with context and scope metadata, including an explicit zero count for empty results. Large descriptions and history are bounded by default and can be returned in full with `--full`. Mutation routes are non-interactive and include the resolved organization, project, work-item ID, and resulting state. Updates read the target first and report `noOp: true` when requested values are already satisfied. Use repeatable `--field Reference.Name=value` options for project-specific fields. No delete route is exposed. Authentication remains delegated to Azure CLI; tokens are never stored or printed.
 
 ## Pull-request review
 
