@@ -1,3 +1,4 @@
+import { isValidFieldReferenceName } from "./field-validation.js";
 import { validationError } from "./errors.js";
 
 export type Route =
@@ -20,6 +21,13 @@ export interface ParsedInvocation {
   full?: boolean;
   wiql?: string;
   id?: string;
+  workItemType?: string;
+  title?: string;
+  description?: string;
+  parent?: string;
+  state?: string;
+  tags?: string;
+  fields?: Record<string, string>;
 }
 
 const scopeFlags = new Set(["organization", "project", "team", "iteration"]);
@@ -30,6 +38,23 @@ const workItemFilterFlags = new Set([
   "area",
   "area-path",
   "full",
+]);
+const workItemMutationFlags = new Set([
+  ...scopeFlags,
+  "assignee",
+  "assigned-to",
+  "area",
+  "area-path",
+  "iteration",
+  "type",
+  "work-item-type",
+  "title",
+  "description",
+  "parent",
+  "state",
+  "tags",
+  "tag",
+  "field",
 ]);
 
 export function parseInvocation(
@@ -75,8 +100,13 @@ export function parseInvocation(
       ? workItemFilterFlags
       : action === "show"
         ? new Set([...scopeFlags, "full"])
-        : scopeFlags,
+        : action === "create" || action === "update"
+          ? workItemMutationFlags
+          : scopeFlags,
     new Set(["full"]),
+    action === "create" || action === "update"
+      ? new Set(["field", "tag"])
+      : new Set(),
   );
   if (action === "show" || action === "update" || action === "links") {
     const id = positional(rest, new Set(["full"]));
@@ -99,44 +129,65 @@ export function parseInvocation(
       `\`work-item ${action}\` does not accept positional arguments.`,
     );
   }
+  const canonical = canonicalWorkItemValues(values);
   return {
     route: `work-item ${action}` as Route,
-    ...canonicalWorkItemValues(values),
+    ...canonical,
   };
 }
 
 function canonicalWorkItemValues(
-  values: Omit<ParsedInvocation, "route" | "id"> &
-    Record<string, string | boolean | undefined>,
+  values: Record<string, string | boolean | string[] | undefined>,
 ): Omit<ParsedInvocation, "route" | "id"> {
   rejectConflictingAliases(values, "assignee", "assigned-to");
   rejectConflictingAliases(values, "area", "area-path");
+  rejectConflictingAliases(values, "type", "work-item-type");
+  if (values.tags !== undefined && values.tag !== undefined) {
+    throw validationError("Options --tags and --tag cannot be used together.");
+  }
 
   const assignee =
-    typeof values.assignee === "string"
-      ? values.assignee
-      : typeof values["assigned-to"] === "string"
-        ? values["assigned-to"]
-        : undefined;
-  const area =
-    typeof values.area === "string"
-      ? values.area
-      : typeof values["area-path"] === "string"
-        ? values["area-path"]
-        : undefined;
+    stringValue(values.assignee) ?? stringValue(values["assigned-to"]);
+  const area = stringValue(values.area) ?? stringValue(values["area-path"]);
+  const workItemType =
+    stringValue(values.type) ?? stringValue(values["work-item-type"]);
+  const tags =
+    stringValue(values.tags) ?? stringArrayValue(values.tag)?.join("; ");
+  const fields = parseCustomFields(values.field);
   return {
-    ...(values.organization ? { organization: values.organization } : {}),
-    ...(values.project ? { project: values.project } : {}),
-    ...(values.team ? { team: values.team } : {}),
-    ...(values.iteration ? { iteration: values.iteration } : {}),
+    ...(stringValue(values.organization)
+      ? { organization: stringValue(values.organization) }
+      : {}),
+    ...(stringValue(values.project)
+      ? { project: stringValue(values.project) }
+      : {}),
+    ...(stringValue(values.team) ? { team: stringValue(values.team) } : {}),
+    ...(stringValue(values.iteration)
+      ? { iteration: stringValue(values.iteration) }
+      : {}),
     ...(assignee ? { assignee } : {}),
     ...(area ? { area } : {}),
+    ...(workItemType ? { workItemType } : {}),
+    ...(stringValue(values.title) !== undefined
+      ? { title: stringValue(values.title) }
+      : {}),
+    ...(stringValue(values.description) !== undefined
+      ? { description: stringValue(values.description) }
+      : {}),
+    ...(stringValue(values.parent) !== undefined
+      ? { parent: stringValue(values.parent) }
+      : {}),
+    ...(stringValue(values.state) !== undefined
+      ? { state: stringValue(values.state) }
+      : {}),
+    ...(tags !== undefined ? { tags } : {}),
+    ...(Object.keys(fields).length > 0 ? { fields } : {}),
     ...(values.full === true ? { full: true } : {}),
   };
 }
 
 function rejectConflictingAliases(
-  values: Record<string, string | boolean | undefined>,
+  values: Record<string, string | boolean | string[] | undefined>,
   canonical: string,
   alias: string,
 ): void {
@@ -152,8 +203,9 @@ function parseFlags(
   args: string[],
   allowed: Set<string>,
   booleanFlags: Set<string> = new Set(),
-): Omit<ParsedInvocation, "route" | "id"> {
-  const result: Record<string, string | boolean> = {};
+  repeatableFlags: Set<string> = new Set(),
+): Record<string, string | boolean | string[]> {
+  const result: Record<string, string | boolean | string[]> = {};
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg.startsWith("-")) {
@@ -168,7 +220,7 @@ function parseFlags(
         "Run the command with `--help` to see accepted options.",
       ]);
     }
-    if (Object.hasOwn(result, name)) {
+    if (Object.hasOwn(result, name) && !repeatableFlags.has(name)) {
       throw validationError(`Option --${name} was provided more than once.`);
     }
     if (booleanFlags.has(name)) {
@@ -182,9 +234,58 @@ function parseFlags(
     if (!value || value.startsWith("--")) {
       throw validationError(`Option --${name} requires a value.`);
     }
-    result[name] = value;
+    if (repeatableFlags.has(name)) {
+      const previous = result[name];
+      result[name] = [
+        ...(Array.isArray(previous)
+          ? previous
+          : previous
+            ? [String(previous)]
+            : []),
+        value,
+      ];
+    } else {
+      result[name] = value;
+    }
   }
-  return result as Omit<ParsedInvocation, "route" | "id">;
+  return result;
+}
+
+function stringValue(
+  value: string | boolean | string[] | undefined,
+): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function stringArrayValue(
+  value: string | boolean | string[] | undefined,
+): string[] | undefined {
+  return Array.isArray(value) ? value : undefined;
+}
+
+function parseCustomFields(
+  value: string | boolean | string[] | undefined,
+): Record<string, string> {
+  const fields =
+    stringArrayValue(value) ??
+    (stringValue(value) ? [stringValue(value)!] : []);
+  const result: Record<string, string> = {};
+  for (const field of fields) {
+    const separator = field.indexOf("=");
+    const name = separator >= 0 ? field.slice(0, separator).trim() : "";
+    if (!isValidFieldReferenceName(name)) {
+      throw validationError(
+        "Each --field value must use a valid `Reference.Name=value` syntax.",
+      );
+    }
+    if (Object.hasOwn(result, name)) {
+      throw validationError(
+        `Custom field --field ${name} was provided more than once.`,
+      );
+    }
+    result[name] = field.slice(separator + 1);
+  }
+  return result;
 }
 
 function assertNoPositionals(args: string[], route: string): void {
