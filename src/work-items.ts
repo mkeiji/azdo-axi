@@ -298,15 +298,6 @@ export function normalizeAzureError(
     .filter((value): value is string => typeof value === "string")
     .join(" ")
     .toLowerCase();
-  if (/not found|does not exist|404/.test(text)) {
-    return new AzdoAxiError(
-      `Azure DevOps ${operation} resource was not found.`,
-      operation.startsWith("work-item show")
-        ? "WORK_ITEM_NOT_FOUND"
-        : "AZ_RESOURCE_NOT_FOUND",
-      ["Check the work-item ID and resolved organization/project context."],
-    );
-  }
   if (/unauthorized|authentication|login|401/.test(text)) {
     return new AzdoAxiError(
       `Azure DevOps authentication failed for ${operation}.`,
@@ -319,6 +310,15 @@ export function normalizeAzureError(
       `Azure DevOps denied access to ${operation}.`,
       "AZ_PERMISSION_DENIED",
       ["Verify your account can read this project and work item."],
+    );
+  }
+  if (/not found|does not exist|404/.test(text)) {
+    return new AzdoAxiError(
+      `Azure DevOps ${operation} resource was not found.`,
+      operation.startsWith("work-item show")
+        ? "WORK_ITEM_NOT_FOUND"
+        : "AZ_RESOURCE_NOT_FOUND",
+      ["Check the work-item ID and resolved organization/project context."],
     );
   }
   return new AzdoAxiError(

@@ -171,6 +171,33 @@ describe("work-item reads", () => {
       ),
     ).toMatchObject({
       code: "WORK_ITEM_NOT_FOUND",
+      suggestions: [expect.stringContaining("work-item ID")],
+    });
+  });
+
+  it("prioritizes permission-only errors over not-found wording", () => {
+    expect(
+      normalizeAzureError(
+        new Error("You do not have permission to view this work item"),
+        "work-item show 9",
+      ),
+    ).toMatchObject({
+      code: "AZ_PERMISSION_DENIED",
+      suggestions: [expect.stringContaining("read")],
+    });
+  });
+
+  it("prioritizes permission in combined does-not-exist messages", () => {
+    expect(
+      normalizeAzureError(
+        new Error(
+          "The work item does not exist or you have no permission to view it",
+        ),
+        "work-item show 9",
+      ),
+    ).toMatchObject({
+      code: "AZ_PERMISSION_DENIED",
+      suggestions: [expect.stringContaining("read")],
     });
   });
 

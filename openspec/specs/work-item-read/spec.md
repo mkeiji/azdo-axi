@@ -61,12 +61,7 @@ The system SHALL truncate large descriptions and history by default, report orig
 
 ### Requirement: Safe validation and normalized failures
 
-The system SHALL reject unknown or misspelled flags before making an Azure request and SHALL normalize Azure failures into concise structured errors with actionable suggestions. When a work-item list receives both spellings of an aliased filter, it SHALL reject the invocation before context resolution or Azure execution, regardless of whether the values are identical.
-
-#### Scenario: Conflicting assignee aliases
-
-- **WHEN** a caller supplies both `--assignee` and `--assigned-to` to `work-item list`
-- **THEN** the command SHALL fail locally and identify the conflicting aliases without making an Azure request
+The system SHALL reject unknown or misspelled flags before making an Azure request and SHALL normalize Azure failures into concise structured errors with actionable suggestions. Permission-specific indicators SHALL take precedence over ambiguous not-found wording, including combined messages that say a resource does not exist or the caller lacks permission. Genuine not-found failures SHALL retain their existing error codes and context-check suggestion.
 
 #### Scenario: Unknown flag
 
@@ -77,6 +72,21 @@ The system SHALL reject unknown or misspelled flags before making an Azure reque
 
 - **WHEN** Azure CLI reports an unavailable extension, authentication failure, permission failure, invalid context, or missing work item
 - **THEN** the command SHALL emit a structured concise error code and a relevant remediation suggestion
+
+#### Scenario: Permission wording takes precedence
+
+- **WHEN** an Azure error contains permission-specific wording, including a combined “does not exist or no permission” message
+- **THEN** the command SHALL emit `AZ_PERMISSION_DENIED` with the existing permission remediation suggestion rather than a not-found code
+
+#### Scenario: Genuine not-found wording
+
+- **WHEN** an Azure error contains not-found wording without permission-specific indicators
+- **THEN** the command SHALL retain the existing `WORK_ITEM_NOT_FOUND` or `AZ_RESOURCE_NOT_FOUND` code and context-check suggestion
+
+#### Scenario: Conflicting assignee aliases
+
+- **WHEN** a caller supplies both `--assignee` and `--assigned-to` to `work-item list`
+- **THEN** the command SHALL fail locally and identify the conflicting aliases without making an Azure request
 
 #### Scenario: Conflicting area aliases
 
