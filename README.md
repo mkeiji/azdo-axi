@@ -108,7 +108,7 @@ Run `azdo-axi --help` for the current top-level command list. The application co
 
 ```text
 azdo-axi context [--organization <org>] [--project <project>] [--team <team>] [--iteration <iteration>]
-azdo-axi work-item list [context options] [--assignee <user>] [--iteration <path>] [--area <path>]
+azdo-axi work-item list [context options] [--assignee <user>] [--iteration <path>] [--area <path>] [--full]
 azdo-axi work-item show <id> [context options] [--full]
 azdo-axi work-item create [context options] --type <type> --title <title> [mutation options]
 azdo-axi work-item update <id> [context options] [mutation options]
