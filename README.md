@@ -59,17 +59,17 @@ az login
 az account show
 ```
 
-The Azure DevOps extension can also authenticate with a personal access token (PAT). The extension prompts for the PAT and stores it under Azure CLI's control:
-
-```sh
-az devops login --organization https://dev.azure.com/example
-```
-
-Install and verify the extension if it is not already present:
+Install and verify the Azure DevOps extension before authenticating with it:
 
 ```sh
 az extension add --name azure-devops
 az extension show --name azure-devops
+```
+
+The Azure DevOps extension can authenticate with a personal access token (PAT). It prompts for the PAT and stores it under Azure CLI's control:
+
+```sh
+az devops login --organization https://dev.azure.com/example
 ```
 
 `azdo-axi` invokes `az` for these operations and never stores or prints credentials. An authentication error means that the Azure CLI session, PAT, or Azure DevOps permissions need attention; update the Azure CLI authentication and verify access to the selected organization.
