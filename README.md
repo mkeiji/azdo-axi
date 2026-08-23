@@ -18,20 +18,9 @@ az extension add --name azure-devops
 az extension show --name azure-devops
 ```
 
-## Installation
+## Installation from source
 
-### Install the published package
-
-Install the command globally with npm:
-
-```sh
-npm install --global azdo-axi
-azdo-axi --version
-```
-
-### Install from a source checkout
-
-To work from a clone of this repository instead:
+`azdo-axi` is not currently published to npm. Install it from a source checkout and build the CLI locally:
 
 ```sh
 git clone https://github.com/mkeiji/azdo-axi.git
@@ -41,23 +30,49 @@ npm run build
 node dist/bin/azdo-axi.js --version
 ```
 
-Use `node dist/bin/azdo-axi.js` in the examples below when using a source checkout; use `azdo-axi` when using the published package.
+The built entry point is `dist/bin/azdo-axi.js`. To make the source-built CLI available as `azdo-axi` on `PATH`, link this checkout with npm after building:
+
+```sh
+npm link
+azdo-axi --version
+```
+
+`npm link` links this checkout; it does not download a published `azdo-axi` package. Re-run `npm run build` after changing the source. Without the link, run the CLI directly as `node dist/bin/azdo-axi.js`.
+
+## Agent setup
+
+This repository includes the agent skill at `skills/azdo-axi/SKILL.md`. Copy it into the skill directory used by the agent. For an agent using the conventional user-level `~/.agents/skills` directory:
+
+```sh
+mkdir -p "$HOME/.agents/skills/azdo-axi"
+cp skills/azdo-axi/SKILL.md "$HOME/.agents/skills/azdo-axi/SKILL.md"
+```
+
+Use the equivalent user-level skill directory for an agent with a different discovery location, then restart or reload the agent if it does not discover new skills automatically. The skill assumes that `azdo-axi` is available on `PATH`; complete the `npm link` step above or invoke the source-built entry point explicitly.
 
 ## Authentication
 
-`azdo-axi` delegates Azure DevOps authentication to Azure CLI. It does not implement a separate login flow, access token option, or credential store. Authenticate with a supported Azure CLI method before running a routed command, for example:
+`azdo-axi` delegates Azure DevOps authentication to Azure CLI. It has no separate azdo-axi token, login flow, credential store, or configuration file. Authenticate with Azure CLI before running a routed command:
 
 ```sh
 az login
+az account show
 ```
 
-If your Azure DevOps setup uses a personal access token, use the Azure DevOps extension's login flow instead:
+Install and verify the Azure DevOps extension before authenticating with it:
+
+```sh
+az extension add --name azure-devops
+az extension show --name azure-devops
+```
+
+The Azure DevOps extension can authenticate with a personal access token (PAT). It prompts for the PAT and stores it under Azure CLI's control:
 
 ```sh
 az devops login --organization https://dev.azure.com/example
 ```
 
-The Azure CLI owns any login session or PAT configuration created by those commands. `azdo-axi` invokes `az`, never stores or prints credentials, and does not copy tokens into its own files or configuration. An authentication error means that the Azure CLI session or Azure DevOps permissions need attention; run `az login` (or the appropriate Azure CLI authentication command) and verify access to the selected organization.
+`azdo-axi` invokes `az` for these operations and never stores or prints credentials. An authentication error means that the Azure CLI session, PAT, or Azure DevOps permissions need attention; update the Azure CLI authentication and verify access to the selected organization.
 
 ## Organization and project context
 
@@ -104,7 +119,7 @@ The command output includes the resolved organization, project, and any optional
 
 ## Usage
 
-Run `azdo-axi --help` for the current top-level command list. The application command surface is:
+The commands below use the `azdo-axi` command linked to this source checkout. If you did not run `npm link`, replace `azdo-axi` with `node dist/bin/azdo-axi.js`. Run `azdo-axi --help` for the current top-level command list. The application command surface is:
 
 ```text
 azdo-axi context [--organization <org>] [--project <project>] [--team <team>] [--iteration <iteration>]
