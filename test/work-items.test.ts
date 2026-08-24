@@ -30,6 +30,22 @@ function runnerFor(output: unknown, calls: string[][]): CommandRunner {
   };
 }
 
+function runnerForSequence(
+  outputs: unknown[],
+  calls: string[][],
+): CommandRunner {
+  return {
+    run: async (args) => {
+      calls.push([...args]);
+      const output = outputs.shift();
+      if (output === undefined) {
+        throw new Error("Unexpected command invocation");
+      }
+      return JSON.stringify(output);
+    },
+  };
+}
+
 describe("work-item mutations", () => {
   it("builds a task create payload with parent, common, and custom fields", () => {
     const args = buildCreateWorkItemArgs(context, {
@@ -69,16 +85,28 @@ describe("work-item mutations", () => {
   it("updates a bug and returns the resulting target envelope", async () => {
     const calls: string[][] = [];
     const result = await updateWorkItem(
-      runnerFor(
-        {
-          id: 9,
-          fields: {
-            "System.WorkItemType": "Bug",
-            "System.Title": "Broken",
-            "System.State": "Active",
-            "System.Tags": "old",
+      runnerForSequence(
+        [
+          {
+            id: 9,
+            fields: {
+              "System.WorkItemType": "Bug",
+              "System.Title": "Broken",
+              "System.State": "Active",
+              "System.Tags": "old",
+            },
           },
-        },
+          {
+            id: 9,
+            fields: {
+              "System.WorkItemType": "Bug",
+              "System.Title": "Broken",
+              "System.State": "Resolved",
+              "System.Tags": "security; urgent",
+              "System.AssignedTo": { displayName: "Ada" },
+            },
+          },
+        ],
         calls,
       ),
       context,
@@ -91,6 +119,7 @@ describe("work-item mutations", () => {
       workItemId: 9,
       operation: "update",
       noOp: false,
+      state: "Resolved",
     });
     expect(calls).toHaveLength(2);
     expect(calls[0]).toEqual(
@@ -110,22 +139,23 @@ describe("work-item mutations", () => {
         "json",
       ]),
     );
-    expect(calls[1]).toEqual(
-      expect.arrayContaining([
-        "boards",
-        "work-item",
-        "update",
-        "--id",
-        "9",
-        "System.State=Resolved",
-        "System.Tags=security; urgent",
-        "System.AssignedTo=Ada",
-        "--organization",
-        context.organization,
-        "--project",
-        context.project,
-      ]),
-    );
+    expect(calls[1]).toEqual([
+      "boards",
+      "work-item",
+      "update",
+      "--id",
+      "9",
+      "--fields",
+      "System.AssignedTo=Ada",
+      "System.State=Resolved",
+      "System.Tags=security; urgent",
+      "--organization",
+      context.organization,
+      "--output",
+      "json",
+      "--only-show-errors",
+    ]);
+    expect(calls[1]).not.toContain("--project");
   });
 
   it("returns a safe no-op without issuing an update", async () => {

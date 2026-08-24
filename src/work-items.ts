@@ -152,8 +152,6 @@ export function buildUpdateWorkItemArgs(
     ...fieldArgs(fields),
     "--organization",
     context.organization,
-    "--project",
-    context.project,
     "--output",
     "json",
     "--only-show-errors",
