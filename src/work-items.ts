@@ -91,6 +91,15 @@ const FIELDS = {
   history: "System.History",
 } as const;
 
+const NATIVE_UPDATE_FLAGS: Record<string, string> = {
+  [FIELDS.title]: "--title",
+  [FIELDS.description]: "--description",
+  [FIELDS.state]: "--state",
+  [FIELDS.assignee]: "--assigned-to",
+  [FIELDS.area]: "--area",
+  [FIELDS.iteration]: "--iteration",
+};
+
 export function buildCreateWorkItemArgs(
   context: AzureDevOpsContext,
   options: WorkItemMutationOptions,
@@ -143,13 +152,24 @@ export function buildUpdateWorkItemArgs(
       "VALIDATION_ERROR",
     );
   }
+  const nativeArgs: string[] = [];
+  const customFields: Record<string, string> = {};
+  for (const [name, value] of Object.entries(fields)) {
+    const flag = NATIVE_UPDATE_FLAGS[name];
+    if (flag) {
+      nativeArgs.push(flag, value);
+    } else {
+      customFields[name] = value;
+    }
+  }
   return [
     "boards",
     "work-item",
     "update",
     "--id",
     id,
-    ...fieldArgs(fields),
+    ...nativeArgs,
+    ...fieldArgs(customFields),
     "--organization",
     context.organization,
     "--output",
@@ -752,21 +772,30 @@ export function normalizeAzureError(
     .toLowerCase();
   if (/unauthorized|authentication|login|401/.test(text)) {
     return new AzdoAxiError(
-      `Azure DevOps authentication failed for ${operation}.`,
+      withAzureErrorDetail(
+        `Azure DevOps authentication failed for ${operation}.`,
+        error,
+      ),
       "AZ_AUTHENTICATION_FAILED",
       ["Run `az login` and verify access to the selected organization."],
     );
   }
   if (/forbidden|permission|403|not authorized/.test(text)) {
     return new AzdoAxiError(
-      `Azure DevOps denied access to ${operation}.`,
+      withAzureErrorDetail(
+        `Azure DevOps denied access to ${operation}.`,
+        error,
+      ),
       "AZ_PERMISSION_DENIED",
       ["Verify your account can read this project and work item."],
     );
   }
   if (/not found|does not exist|404/.test(text)) {
     return new AzdoAxiError(
-      `Azure DevOps ${operation} resource was not found.`,
+      withAzureErrorDetail(
+        `Azure DevOps ${operation} resource was not found.`,
+        error,
+      ),
       /work-item (show|links|update)/.test(operation)
         ? "WORK_ITEM_NOT_FOUND"
         : "AZ_RESOURCE_NOT_FOUND",
@@ -774,12 +803,52 @@ export function normalizeAzureError(
     );
   }
   return new AzdoAxiError(
-    `Azure DevOps ${operation} request failed.`,
+    withAzureErrorDetail(`Azure DevOps ${operation} request failed.`, error),
     "AZ_BOARDS_REQUEST_FAILED",
     [
       "Run `az devops configure --list` and verify the organization/project context.",
     ],
   );
+}
+
+function withAzureErrorDetail(message: string, error: unknown): string {
+  const detail = safeAzureErrorDetail(error);
+  return detail ? `${message} Azure CLI: ${detail}` : message;
+}
+
+function safeAzureErrorDetail(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const stderr = (error as Record<string, unknown>).stderr;
+  if (typeof stderr !== "string" || stderr.trim().length === 0) {
+    return undefined;
+  }
+  const detail = stderr
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(
+      /(\bauthorization\s*:\s*)(?:[^\s]+\s+)?(?:([\"'])[^\"']*\2|[^\s\"',;]+)/gi,
+      "$1[redacted]",
+    )
+    .replace(
+      /((?:[\"']?)(?:access[_-]?token|refresh[_-]?token|id[_-]?token)(?:[\"']?)\s*:\s*)\"[^\"]*\"/gi,
+      '$1"[redacted]"',
+    )
+    .replace(
+      /((?:[\"']?)(?:access[_-]?token|refresh[_-]?token|id[_-]?token)(?:[\"']?)\s*:\s*)'[^']*'/gi,
+      "$1'[redacted]'",
+    )
+    .replace(
+      /((?:[\"']?)(?:password|passwd|pat|token|secret|client[_-]?secret|clientSecret|api[_-]?key|apiKey|private[_-]?key)(?:[\"']?)\s*:\s*)([\"'])[^\"']*\2/gi,
+      "$1$2[redacted]$2",
+    )
+    .replace(/((?:https?:\/\/)[^\s/:]+):[^\s@]+@/gi, "$1:[redacted]@")
+    .replace(
+      /\b(password|passwd|pat|token|secret|client[_-]?secret|clientSecret|api[_-]?key|apiKey|private[_-]?key)\s*[=:]\s*[^\s]+/gi,
+      "$1=[redacted]",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!detail) return undefined;
+  return detail.length > 500 ? `${detail.slice(0, 497)}...` : detail;
 }
 
 function invalidOutput(message: string): AzdoAxiError {
