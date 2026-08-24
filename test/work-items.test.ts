@@ -145,9 +145,11 @@ describe("work-item mutations", () => {
       "update",
       "--id",
       "9",
+      "--assigned-to",
+      "Ada",
+      "--state",
+      "Resolved",
       "--fields",
-      "System.AssignedTo=Ada",
-      "System.State=Resolved",
       "System.Tags=security; urgent",
       "--organization",
       context.organization,
@@ -156,6 +158,45 @@ describe("work-item mutations", () => {
       "--only-show-errors",
     ]);
     expect(calls[1]).not.toContain("--project");
+  });
+
+  it("builds native standard update flags and keeps custom fields under --fields", () => {
+    const args = buildUpdateWorkItemArgs(context, "314701", {
+      "System.Title": "Updated title",
+      "System.Description": "Updated description",
+      "System.State": "Active",
+      "System.AssignedTo": "Ada",
+      "System.AreaPath": "Product\\Frontend",
+      "System.IterationPath": "Product\\Sprint 2",
+      "Custom.Risk": "high",
+    });
+
+    expect(args).toEqual([
+      "boards",
+      "work-item",
+      "update",
+      "--id",
+      "314701",
+      "--title",
+      "Updated title",
+      "--description",
+      "Updated description",
+      "--state",
+      "Active",
+      "--assigned-to",
+      "Ada",
+      "--area",
+      "Product\\Frontend",
+      "--iteration",
+      "Product\\Sprint 2",
+      "--fields",
+      "Custom.Risk=high",
+      "--organization",
+      context.organization,
+      "--output",
+      "json",
+      "--only-show-errors",
+    ]);
   });
 
   it("returns a safe no-op without issuing an update", async () => {
@@ -178,6 +219,46 @@ describe("work-item mutations", () => {
     );
     expect(result.noOp).toBe(true);
     expect(calls).toHaveLength(1);
+  });
+
+  it("reproduces a successful state update for the reported work item path", async () => {
+    const calls: string[][] = [];
+    const result = await updateWorkItem(
+      runnerForSequence(
+        [
+          {
+            id: 314701,
+            fields: {
+              "System.WorkItemType": "Task",
+              "System.Title": "Reported item",
+              "System.State": "New",
+            },
+          },
+          {
+            id: 314701,
+            fields: {
+              "System.WorkItemType": "Task",
+              "System.Title": "Reported item",
+              "System.State": "Active",
+            },
+          },
+        ],
+        calls,
+      ),
+      context,
+      "314701",
+      { state: "Active" },
+    );
+
+    expect(result).toMatchObject({
+      workItemId: 314701,
+      state: "Active",
+      noOp: false,
+    });
+    expect(calls[1]).toEqual(
+      expect.arrayContaining(["--id", "314701", "--state", "Active"]),
+    );
+    expect(calls[1]).not.toContain("--fields");
   });
 
   it("rejects invalid mutation payloads before Azure writes", () => {
@@ -229,6 +310,26 @@ describe("work-item mutations", () => {
         title: "Cannot create",
       }),
     ).rejects.toMatchObject({ code: "AZ_PERMISSION_DENIED" });
+  });
+
+  it("includes bounded safe Azure CLI stderr details in request failures", () => {
+    const error = normalizeAzureError(
+      {
+        message: "Command failed",
+        stderr:
+          "The field System.State is not recognized. token=super-secret " +
+          "x".repeat(600),
+      },
+      "work-item update 314701",
+    );
+
+    expect(error).toMatchObject({ code: "AZ_BOARDS_REQUEST_FAILED" });
+    expect(error.message).toContain(
+      "The field System.State is not recognized.",
+    );
+    expect(error.message).toContain("token=[redacted]");
+    expect(error.message).not.toContain("super-secret");
+    expect(error.message.length).toBeLessThan(700);
   });
 });
 
