@@ -312,6 +312,7 @@ async function readRawWorkItem(
   context: AzureDevOpsContext,
   id: string,
   operation: string,
+  includeProject = true,
 ): Promise<Record<string, unknown>> {
   const raw = await runAzureJson(
     runner,
@@ -323,8 +324,7 @@ async function readRawWorkItem(
       id,
       "--organization",
       context.organization,
-      "--project",
-      context.project,
+      ...(includeProject ? ["--project", context.project] : []),
       "--expand",
       "relations",
       "--output",
@@ -475,6 +475,7 @@ export async function showWorkItem(
     context,
     id,
     `work-item show ${id}`,
+    false,
   );
   return {
     context,
