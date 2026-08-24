@@ -93,6 +93,23 @@ describe("work-item mutations", () => {
       noOp: false,
     });
     expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual(
+      expect.arrayContaining([
+        "boards",
+        "work-item",
+        "show",
+        "--id",
+        "9",
+        "--organization",
+        context.organization,
+        "--project",
+        context.project,
+        "--expand",
+        "relations",
+        "--output",
+        "json",
+      ]),
+    );
     expect(calls[1]).toEqual(
       expect.arrayContaining([
         "boards",
@@ -402,17 +419,41 @@ describe("work-item reads", () => {
     ).toThrow("Options --area and --area-path cannot be used together");
   });
 
-  it("requests relations and JSON when showing a work item", async () => {
+  it("uses supported arguments and preserves context when showing a work item", async () => {
     const calls: string[][] = [];
-    await showWorkItem(
-      runnerFor({ id: 7, fields: {} }, calls),
+    const result = await showWorkItem(
+      runnerFor(
+        {
+          id: 7,
+          fields: {
+            "System.Title": "Inspect",
+          },
+        },
+        calls,
+      ),
       context,
       "7",
       {},
     );
-    expect(calls[0]).toEqual(
-      expect.arrayContaining(["--expand", "relations", "--output", "json"]),
-    );
+
+    expect(calls[0]).toEqual([
+      "boards",
+      "work-item",
+      "show",
+      "--id",
+      "7",
+      "--organization",
+      context.organization,
+      "--expand",
+      "relations",
+      "--output",
+      "json",
+      "--only-show-errors",
+    ]);
+    expect(result).toMatchObject({
+      context,
+      item: { id: 7, title: "Inspect" },
+    });
   });
 
   it("executes raw WIQL and preserves custom fields and scope", async () => {
