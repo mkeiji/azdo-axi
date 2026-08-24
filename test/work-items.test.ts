@@ -352,6 +352,19 @@ describe("work-item mutations", () => {
       expect(error.message).not.toContain(secret);
     }
   });
+
+  it("redacts quoted bearer token diagnostics", () => {
+    const secret = "quoted-bearer-secret";
+    const error = normalizeAzureError(
+      {
+        stderr: `Authorization: Bearer "${secret}"`,
+      },
+      "work-item update 314701",
+    );
+
+    expect(error.message).toContain("Authorization: Bearer [redacted]");
+    expect(error.message).not.toContain(secret);
+  });
 });
 
 describe("work-item reads", () => {
