@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-24
+goal: Keep unsupported project arguments out of show-based read commands while
+  preserving supported project context

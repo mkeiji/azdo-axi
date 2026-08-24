@@ -211,6 +211,7 @@ export async function updateWorkItem(
     context,
     id,
     "work-item update",
+    false,
   );
   const fields = changedMutationFields(current, requested);
   if (Object.keys(fields).length === 0) {
@@ -514,8 +515,6 @@ export async function linkWorkItem(
     id,
     "--organization",
     context.organization,
-    "--project",
-    context.project,
     "--expand",
     "relations",
     "--output",

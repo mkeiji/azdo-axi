@@ -65,6 +65,16 @@ The system SHALL invoke `az` with argv arguments and explicit JSON output, then 
 - **WHEN** a caller invokes a route whose underlying Azure command supports `--project`, including work-item create, list, or query
 - **THEN** the generated Azure argv SHALL continue to include the resolved project without changing that route's existing argument order or behavior
 
+#### Scenario: Show-based routes use supported arguments
+
+- **WHEN** a caller invokes `work-item show`, `work-item update`, or `work-item links` with valid organization and project context
+- **THEN** every generated `az boards work-item show` request SHALL include the resolved organization and JSON output options, SHALL omit `--project`, and SHALL preserve the resolved project in wrapper context and normalized output
+
+#### Scenario: Supported routes retain project arguments
+
+- **WHEN** a caller invokes work-item create, list, or query with valid context
+- **THEN** the generated Azure argv SHALL continue to include the resolved project without changing that route's existing argument order or behavior
+
 ### Requirement: Bounded detail output
 
 The system SHALL truncate large descriptions and history by default, report original sizes, and support `--full` to return untruncated content.
@@ -112,3 +122,4 @@ The system SHALL reject unknown or misspelled flags before making an Azure reque
 
 - **WHEN** a caller supplies both `--area` and `--area-path` to `work-item list`
 - **THEN** the command SHALL fail locally and identify the conflicting aliases without making an Azure request
+
