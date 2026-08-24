@@ -344,7 +344,7 @@ describe("work-item mutations", () => {
       "work-item update 314701",
     );
 
-    expect(error.message).toContain("Authorization: Bearer [redacted]");
+    expect(error.message).toContain("Authorization: [redacted]");
     expect(error.message).toContain('"accessToken":"[redacted]"');
     expect(error.message).toContain('"access_token": "[redacted]"');
     expect(error.message).toContain("client_secret=[redacted]");
@@ -362,7 +362,20 @@ describe("work-item mutations", () => {
       "work-item update 314701",
     );
 
-    expect(error.message).toContain("Authorization: Bearer [redacted]");
+    expect(error.message).toContain("Authorization: [redacted]");
+    expect(error.message).not.toContain(secret);
+  });
+
+  it("redacts Basic authorization credentials in diagnostics", () => {
+    const secret = "dXNlcjpzdXBlci1zZWNyZXQ=";
+    const error = normalizeAzureError(
+      {
+        stderr: `Authorization: Basic ${secret}`,
+      },
+      "work-item update 314701",
+    );
+
+    expect(error.message).toContain("Authorization: [redacted]");
     expect(error.message).not.toContain(secret);
   });
 });
