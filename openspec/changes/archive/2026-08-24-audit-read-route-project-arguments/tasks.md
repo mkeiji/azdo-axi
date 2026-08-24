@@ -12,5 +12,5 @@
 
 ## 3. Validation and Delivery
 
-- [ ] 3.1 Validate the OpenSpec change and run the repository-integrity and problem-fit checks required for this task.
-- [ ] 3.2 Archive the completed OpenSpec change and commit the implementation and artifacts on the task branch.
+- [x] 3.1 Validate the OpenSpec change and run the repository-integrity and problem-fit checks required for this task.
+- [x] 3.2 Archive the completed OpenSpec change and commit the implementation and artifacts on the task branch.
