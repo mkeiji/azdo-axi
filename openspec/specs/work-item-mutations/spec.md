@@ -29,12 +29,17 @@ The system SHALL provide `azdo-axi work-item create` for standard work-item type
 
 ### Requirement: Update work items
 
-The system SHALL provide `azdo-axi work-item update <id>` for common fields including title, description, state, tags, iteration, area, and assignment, and SHALL support explicit custom fields. The system SHALL apply the same custom-field reference-name validation to update payloads, including callers that use the exported payload builder directly.
+The system SHALL provide `azdo-axi work-item update <id>` for common fields including title, description, state, tags, iteration, area, and assignment, and SHALL support explicit custom fields. The system SHALL apply the same custom-field reference-name validation to update payloads, including callers that use the exported payload builder directly. The generated Azure update request SHALL include the resolved organization and SHALL omit the project option because `az boards work-item update` does not support it. The wrapper SHALL continue to resolve and report the project in context and normalized results.
 
 #### Scenario: Update a bug
 
 - **WHEN** a caller updates a bug's state, tags, and assignee with valid context
-- **THEN** the system SHALL read the target, issue an Azure update containing the requested changed fields, and return the target organization, project, ID, and resulting state
+- **THEN** the system SHALL read the target, issue an Azure update containing the requested changed fields without a project option, and return the target organization, project, ID, and resulting state
+
+#### Scenario: Update uses supported Azure arguments
+
+- **WHEN** a caller requests a changed state value for an accessible work item
+- **THEN** the generated `az boards work-item update` request SHALL include the resolved organization, JSON output, and non-interactive error suppression options, and SHALL not include `--project`
 
 #### Scenario: Already-satisfied update
 

@@ -55,9 +55,14 @@ The system SHALL invoke `az` with argv arguments and explicit JSON output, then 
 - **WHEN** a caller invokes `work-item show <id>` with valid organization and project context
 - **THEN** the generated `az boards work-item show` argv SHALL include the resolved organization and JSON output options, SHALL omit `--project`, and the wrapper SHALL retain the resolved project in its context and output
 
+#### Scenario: Update uses supported Azure arguments
+
+- **WHEN** a caller invokes `work-item update <id>` with valid organization and project context and a changed field value
+- **THEN** the generated `az boards work-item update` argv SHALL include the resolved organization and JSON output options, SHALL omit `--project`, and the wrapper SHALL retain the resolved project in its context and output
+
 #### Scenario: Other routes retain project arguments
 
-- **WHEN** a caller invokes a route whose underlying Azure command supports `--project`, including work-item create, update, list, or query
+- **WHEN** a caller invokes a route whose underlying Azure command supports `--project`, including work-item create, list, or query
 - **THEN** the generated Azure argv SHALL continue to include the resolved project without changing that route's existing argument order or behavior
 
 ### Requirement: Bounded detail output
