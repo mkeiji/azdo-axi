@@ -331,6 +331,27 @@ describe("work-item mutations", () => {
     expect(error.message).not.toContain("super-secret");
     expect(error.message.length).toBeLessThan(700);
   });
+
+  it("redacts bearer, JSON token, and credential assignment diagnostics", () => {
+    const secrets = ["bearer-secret", "json-secret", "underscored-secret"];
+    const error = normalizeAzureError(
+      {
+        stderr:
+          `Authorization: Bearer ${secrets[0]} ` +
+          `{"accessToken":"${secrets[1]}", "access_token": "${secrets[1]}"} ` +
+          `client_secret=${secrets[2]}`,
+      },
+      "work-item update 314701",
+    );
+
+    expect(error.message).toContain("Authorization: Bearer [redacted]");
+    expect(error.message).toContain('"accessToken":"[redacted]"');
+    expect(error.message).toContain('"access_token": "[redacted]"');
+    expect(error.message).toContain("client_secret=[redacted]");
+    for (const secret of secrets) {
+      expect(error.message).not.toContain(secret);
+    }
+  });
 });
 
 describe("work-item reads", () => {

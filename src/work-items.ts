@@ -824,9 +824,18 @@ function safeAzureErrorDetail(error: unknown): string | undefined {
   }
   const detail = stderr
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/(\bauthorization\s*:\s*bearer\s+)[^\s\"',;]+/gi, "$1[redacted]")
+    .replace(
+      /((?:[\"']?)(?:access[_-]?token|refresh[_-]?token|id[_-]?token)(?:[\"']?)\s*:\s*)\"[^\"]*\"/gi,
+      '$1"[redacted]"',
+    )
+    .replace(
+      /((?:[\"']?)(?:access[_-]?token|refresh[_-]?token|id[_-]?token)(?:[\"']?)\s*:\s*)'[^']*'/gi,
+      "$1'[redacted]'",
+    )
     .replace(/((?:https?:\/\/)[^\s/:]+):[^\s@]+@/gi, "$1:[redacted]@")
     .replace(
-      /\b(password|passwd|pat|token|secret)\s*[=:]\s*[^\s]+/gi,
+      /\b(password|passwd|pat|token|secret|client[_-]?secret|clientSecret|api[_-]?key|apiKey|private[_-]?key)\s*[=:]\s*[^\s]+/gi,
       "$1=[redacted]",
     )
     .replace(/\s+/g, " ")
