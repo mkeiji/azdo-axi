@@ -836,6 +836,10 @@ function safeAzureErrorDetail(error: unknown): string | undefined {
       /((?:[\"']?)(?:access[_-]?token|refresh[_-]?token|id[_-]?token)(?:[\"']?)\s*:\s*)'[^']*'/gi,
       "$1'[redacted]'",
     )
+    .replace(
+      /((?:[\"']?)(?:password|passwd|pat|token|secret|client[_-]?secret|clientSecret|api[_-]?key|apiKey|private[_-]?key)(?:[\"']?)\s*:\s*)([\"'])[^\"']*\2/gi,
+      "$1$2[redacted]$2",
+    )
     .replace(/((?:https?:\/\/)[^\s/:]+):[^\s@]+@/gi, "$1:[redacted]@")
     .replace(
       /\b(password|passwd|pat|token|secret|client[_-]?secret|clientSecret|api[_-]?key|apiKey|private[_-]?key)\s*[=:]\s*[^\s]+/gi,

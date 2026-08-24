@@ -353,6 +353,22 @@ describe("work-item mutations", () => {
     }
   });
 
+  it("redacts generic quoted JSON credential properties", () => {
+    const secrets = ["generic-token-secret", "generic-password-secret"];
+    const error = normalizeAzureError(
+      {
+        stderr: `{"token":"${secrets[0]}", "password": "${secrets[1]}"}`,
+      },
+      "work-item update 314701",
+    );
+
+    expect(error.message).toContain('"token":"[redacted]"');
+    expect(error.message).toContain('"password": "[redacted]"');
+    for (const secret of secrets) {
+      expect(error.message).not.toContain(secret);
+    }
+  });
+
   it("redacts quoted bearer token diagnostics", () => {
     const secret = "quoted-bearer-secret";
     const error = normalizeAzureError(
