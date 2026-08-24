@@ -131,14 +131,13 @@ describe("work-item mutations", () => {
         "9",
         "--organization",
         context.organization,
-        "--project",
-        context.project,
         "--expand",
         "relations",
         "--output",
         "json",
       ]),
     );
+    expect(calls[0]).not.toContain("--project");
     expect(calls[1]).toEqual([
       "boards",
       "work-item",
@@ -217,8 +216,13 @@ describe("work-item mutations", () => {
       "9",
       { state: "Resolved", tags: "security; urgent", assignee: "Ada" },
     );
-    expect(result.noOp).toBe(true);
+    expect(result).toMatchObject({
+      noOp: true,
+      organization: context.organization,
+      project: context.project,
+    });
     expect(calls).toHaveLength(1);
+    expect(calls[0]).not.toContain("--project");
   });
 
   it("reproduces a successful state update for the reported work item path", async () => {
@@ -742,7 +746,8 @@ describe("work-item reads", () => {
     ]);
   });
 
-  it("returns empty links and custom source fields", async () => {
+  it("returns empty links and custom source fields without a project show argument", async () => {
+    const calls: string[][] = [];
     const result = await linkWorkItem(
       runnerFor(
         {
@@ -752,16 +757,32 @@ describe("work-item reads", () => {
             "Custom.Risk": "high",
           },
         },
-        [],
+        calls,
       ),
       context,
       "7",
     );
+    expect(calls[0]).toEqual([
+      "boards",
+      "work-item",
+      "show",
+      "--id",
+      "7",
+      "--organization",
+      context.organization,
+      "--expand",
+      "relations",
+      "--output",
+      "json",
+      "--only-show-errors",
+    ]);
     expect(result).toMatchObject({
       workItemId: "7",
       count: 0,
       links: [],
       item: { fields: { "Custom.Risk": "high" } },
+      context,
+      scope: { project: context.project },
     });
   });
 
