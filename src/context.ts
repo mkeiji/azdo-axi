@@ -17,7 +17,10 @@ export async function resolveContext(
   runner: CommandRunner,
   environment: Environment = process.env,
 ): Promise<AzureDevOpsContext> {
-  const preflight = await preflightAzureDevOps(runner);
+  const preflight = await preflightAzureDevOps(
+    runner,
+    contextNeedsDefaults(invocation, environment),
+  );
   return resolveContextValues(invocation, environment, preflight);
 }
 
@@ -60,6 +63,20 @@ export function resolveContextValues(
     ...(team ? { team } : {}),
     ...(iteration ? { iteration } : {}),
   };
+}
+
+function contextNeedsDefaults(
+  invocation: Pick<
+    ParsedInvocation,
+    "organization" | "project" | "team" | "iteration"
+  >,
+  environment: Environment,
+): boolean {
+  return !(["organization", "project", "team", "iteration"] as const).every(
+    (field) =>
+      Boolean(invocation[field]) ||
+      distinct(envNames(field).map((name) => environment[name])).length > 0,
+  );
 }
 
 function resolveRequired(
