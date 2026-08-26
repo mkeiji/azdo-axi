@@ -31,6 +31,7 @@ context flags: --organization <org> --project <project> [--team <team>] [--itera
 list flags: --assignee <user> --iteration <path> --area <path> [--full]
 show flags: [--full]
 create flags: --type <type> --title <title> [--description <text>] [--parent <id>] [--iteration <path>] [--assignee <user>] [--area <path>] [--field <name=value>]...
+  create --parent             Persist and verify the hierarchy relation before success
 update flags: [--title <title>] [--description <text>] [--state <state>] [--tags <tags>] [--assignee <user>] [--iteration <path>] [--area <path>] [--field <name=value>]...
 `;
 

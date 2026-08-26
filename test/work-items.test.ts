@@ -4,6 +4,7 @@ import type { CommandRunner } from "../src/az.js";
 import { parseInvocation } from "../src/arguments.js";
 import {
   buildCreateWorkItemArgs,
+  buildParentRelationArgs,
   buildListWiql,
   buildUpdateWorkItemArgs,
   createWorkItem,
@@ -47,7 +48,7 @@ function runnerForSequence(
 }
 
 describe("work-item mutations", () => {
-  it("builds a task create payload with parent, common, and custom fields", () => {
+  it("builds a task create payload without relying on a parent field", () => {
     const args = buildCreateWorkItemArgs(context, {
       workItemType: "Task",
       title: "Ship it",
@@ -68,7 +69,6 @@ describe("work-item mutations", () => {
         "Ship it",
         "--fields",
         "System.Description=Do the thing",
-        "System.Parent=41",
         "System.IterationPath=Product\\Sprint 2",
         "System.AssignedTo=Ada",
         "Custom.Risk=high",
@@ -80,6 +80,165 @@ describe("work-item mutations", () => {
         "json",
       ]),
     );
+  });
+
+  it("builds the supported parent relation mutation", () => {
+    expect(buildParentRelationArgs(context, "314701", "41")).toEqual([
+      "boards",
+      "work-item",
+      "relation",
+      "add",
+      "--id",
+      "314701",
+      "--relation-type",
+      "parent",
+      "--target-id",
+      "41",
+      "--organization",
+      context.organization,
+      "--output",
+      "json",
+      "--only-show-errors",
+    ]);
+  });
+
+  it("creates, relates, and verifies a work item with a parent", async () => {
+    const calls: string[][] = [];
+    const result = await createWorkItem(
+      runnerForSequence(
+        [
+          {
+            id: 314701,
+            fields: {
+              "System.WorkItemType": "Task",
+              "System.Title": "Child",
+              "System.State": "New",
+            },
+          },
+          {},
+          {
+            id: 314701,
+            fields: {
+              "System.WorkItemType": "Task",
+              "System.Title": "Child",
+              "System.State": "New",
+            },
+            relations: [
+              {
+                rel: "System.LinkTypes.Hierarchy-Reverse",
+                url: "https://dev.azure.com/example/_apis/wit/workItems/41",
+              },
+            ],
+          },
+        ],
+        calls,
+      ),
+      context,
+      { workItemType: "Task", title: "Child", parent: "41" },
+    );
+
+    expect(result).toMatchObject({
+      operation: "create",
+      workItemId: 314701,
+      item: {
+        relationships: [
+          {
+            type: "System.LinkTypes.Hierarchy-Reverse",
+          },
+        ],
+      },
+    });
+    expect(calls).toHaveLength(3);
+    expect(calls[0]).not.toContain("System.Parent=41");
+    expect(calls[1]).toEqual(
+      expect.arrayContaining([
+        "boards",
+        "work-item",
+        "relation",
+        "add",
+        "--id",
+        "314701",
+        "--relation-type",
+        "parent",
+        "--target-id",
+        "41",
+        "--organization",
+        context.organization,
+      ]),
+    );
+    expect(calls[2]).toEqual(
+      expect.arrayContaining([
+        "boards",
+        "work-item",
+        "show",
+        "--id",
+        "314701",
+        "--expand",
+        "relations",
+      ]),
+    );
+  });
+
+  it("verifies a parent field when Azure omits the relation collection", async () => {
+    const result = await createWorkItem(
+      runnerForSequence(
+        [
+          { id: 8, fields: { "System.Title": "Child" } },
+          {},
+          { id: 8, fields: { "System.Parent": 41 } },
+        ],
+        [],
+      ),
+      context,
+      { workItemType: "Task", title: "Child", parent: "41" },
+    );
+    expect(result.workItemId).toBe(8);
+  });
+
+  it("keeps the no-parent create path to one mutation", async () => {
+    const calls: string[][] = [];
+    const result = await createWorkItem(
+      runnerFor({ id: 9, fields: { "System.Title": "Standalone" } }, calls),
+      context,
+      { workItemType: "Task", title: "Standalone" },
+    );
+    expect(result).toMatchObject({ workItemId: 9, operation: "create" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[2]).toBe("create");
+  });
+
+  it("does not report success when parent relation mutation fails", async () => {
+    const calls: string[][] = [];
+    let invocation = 0;
+    const runner: CommandRunner = {
+      run: async (args) => {
+        calls.push([...args]);
+        invocation += 1;
+        if (invocation === 2) throw new Error("403 Forbidden");
+        return JSON.stringify({ id: 12, fields: {} });
+      },
+    };
+    await expect(
+      createWorkItem(runner, context, {
+        workItemType: "Task",
+        title: "Child",
+        parent: "41",
+      }),
+    ).rejects.toMatchObject({ code: "AZ_PERMISSION_DENIED" });
+    expect(calls).toHaveLength(2);
+  });
+
+  it("does not report success when parent relation verification fails", async () => {
+    await expect(
+      createWorkItem(
+        runnerForSequence(
+          [{ id: 13, fields: {} }, {}, { id: 13, fields: {} }],
+          [],
+        ),
+        context,
+        { workItemType: "Task", title: "Orphan", parent: "41" },
+      ),
+    ).rejects.toMatchObject({ code: "AZ_PARENT_RELATION_UNVERIFIED" });
   });
 
   it("updates a bug and returns the resulting target envelope", async () => {
