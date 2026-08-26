@@ -187,7 +187,7 @@ azdo-axi work-item create \
   --project example-project
 ```
 
-`--parent` must be a positive work-item ID. Use repeatable `--field Reference.Name=value` options for custom fields. The standard option and its corresponding custom field cannot be supplied together.
+`--parent` must be a positive work-item ID. When supplied, the command creates the item, persists the Azure DevOps hierarchy relation, and verifies the resulting parent relation before reporting success. If the relation cannot be persisted or verified, the command returns an error instead of claiming success. Use repeatable `--field Reference.Name=value` options for custom fields. The standard option and its corresponding custom field cannot be supplied together.
 
 ### Update a work item
 

@@ -116,6 +116,7 @@ export function buildCreateWorkItemArgs(
   if (options.parent !== undefined) validateParentId(options.parent);
   assertReservedCreateFields(options.fields);
   const fields = mutationFields(options, true);
+  if (options.parent !== undefined) delete fields[FIELDS.parent];
   return [
     "boards",
     "work-item",
@@ -189,7 +190,59 @@ export async function createWorkItem(
     "work-item create",
   );
   assertMutationObject(raw, "work-item create");
-  return mutationResult(context, "create", raw, false);
+  if (options.parent === undefined) {
+    return mutationResult(context, "create", raw, false);
+  }
+
+  const childId = createdWorkItemId(raw);
+  await runAzure(
+    runner,
+    buildParentRelationArgs(context, childId, options.parent),
+    `work-item relation add ${childId}`,
+  );
+  const verified = await readRawWorkItem(
+    runner,
+    context,
+    childId,
+    `work-item show ${childId} for parent verification`,
+    false,
+  );
+  if (!hasParentRelation(verified, options.parent)) {
+    throw new AzdoAxiError(
+      `Azure DevOps did not persist parent ${options.parent} for created work item ${childId}.`,
+      "AZ_PARENT_RELATION_UNVERIFIED",
+      [
+        "Inspect the created work item's relationships and verify the parent work-item ID.",
+      ],
+    );
+  }
+  return mutationResult(context, "create", verified, false, childId);
+}
+
+export function buildParentRelationArgs(
+  context: AzureDevOpsContext,
+  childId: string,
+  parentId: string,
+): string[] {
+  validateWorkItemId(childId, "Created work-item ID");
+  validateParentId(parentId);
+  return [
+    "boards",
+    "work-item",
+    "relation",
+    "add",
+    "--id",
+    childId,
+    "--relation-type",
+    "parent",
+    "--target-id",
+    parentId,
+    "--organization",
+    context.organization,
+    "--output",
+    "json",
+    "--only-show-errors",
+  ];
 }
 
 export async function updateWorkItem(
@@ -324,6 +377,32 @@ function validateWorkItemId(id: string, label = "Work-item ID"): void {
       "VALIDATION_ERROR",
     );
   }
+}
+
+function createdWorkItemId(raw: Record<string, unknown>): string {
+  const id = raw.id;
+  const value =
+    typeof id === "number" && Number.isInteger(id) ? String(id) : id;
+  if (typeof value !== "string" || !/^\d+$/.test(value) || Number(value) <= 0) {
+    throw invalidOutput("work-item create did not return a valid work-item ID");
+  }
+  return value;
+}
+
+function hasParentRelation(
+  item: Record<string, unknown>,
+  parentId: string,
+): boolean {
+  const fields = asRecord(item.fields);
+  if (String(fields[FIELDS.parent] ?? "") === parentId) return true;
+  if (!Array.isArray(item.relations)) return false;
+  return item.relations.some((relation) => {
+    const record = asRecord(relation);
+    return (
+      record.rel === "System.LinkTypes.Hierarchy-Reverse" &&
+      targetIdFromUrl(record.url) === parentId
+    );
+  });
 }
 
 async function readRawWorkItem(
@@ -736,6 +815,18 @@ function splitTags(value: unknown): string[] | undefined {
   return tags.length > 0 ? tags : undefined;
 }
 
+async function runAzure(
+  runner: CommandRunner,
+  args: string[],
+  operation: string,
+): Promise<void> {
+  try {
+    await runner.run(args);
+  } catch (error) {
+    throw normalizeAzureError(error, operation);
+  }
+}
+
 async function runAzureJson(
   runner: CommandRunner,
   args: string[],
@@ -795,7 +886,7 @@ export function normalizeAzureError(
         `Azure DevOps ${operation} resource was not found.`,
         error,
       ),
-      /work-item (show|links|update)/.test(operation)
+      /work-item (show|links|update|relation)/.test(operation)
         ? "WORK_ITEM_NOT_FOUND"
         : "AZ_RESOURCE_NOT_FOUND",
       ["Check the work-item ID and resolved organization/project context."],
