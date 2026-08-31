@@ -10,3 +10,16 @@ Keep this file for knowledge useful to almost every future agent session in this
 Do not repeat what the codebase already shows; point to the authoritative file or command instead.
 Prefer rewriting or pruning existing entries over appending new ones.
 When updating this file, preserve this bar for all agents and keep entries concise.
+
+## Local executable maintenance
+
+After syncing or updating `master`, rebuild, test, and relink the local executable:
+
+```bash
+cd local/azdo-axi-local
+npm run build
+npm test
+npm link
+```
+
+The `azdo-axi` command on `PATH` points to the local checkout's compiled `dist` output and is not rebuilt automatically when source changes.
