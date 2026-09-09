@@ -1,7 +1,10 @@
 import { stat, writeFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 
-import type { CommandRunner } from "./az.js";
+import {
+  MAX_BUFFERED_ATTACHMENT_SIZE,
+  type CommandRunner,
+} from "./az.js";
 import type { AzureDevOpsContext } from "./context.js";
 import { isValidFieldReferenceName } from "./field-validation.js";
 import { AzdoAxiError } from "./errors.js";
@@ -827,6 +830,7 @@ export async function downloadWorkItemAttachment(
     );
   }
   assertSupportedAttachmentMediaType(attachment.contentType);
+  assertBufferedAttachmentSize(attachment.size);
   if (!runner.runBinary) {
     throw new AzdoAxiError(
       "Binary attachment download is unavailable for this Azure runner.",
@@ -842,6 +846,7 @@ export async function downloadWorkItemAttachment(
   } catch (error) {
     throw normalizeAttachmentDownloadError(error);
   }
+  assertBufferedAttachmentSize(binary.length);
   const path = await resolveDownloadPath(
     destination,
     attachment.filename,
@@ -1351,7 +1356,21 @@ function safeAttachmentFilename(
   return name && name !== "." && name !== ".." ? name : attachmentId;
 }
 
+function assertBufferedAttachmentSize(size: number | undefined): void {
+  if (size === undefined || size <= MAX_BUFFERED_ATTACHMENT_SIZE) return;
+  throw new AzdoAxiError(
+    `Attachment size ${size} bytes exceeds the ${MAX_BUFFERED_ATTACHMENT_SIZE / (1024 * 1024)} MiB download limit.`,
+    "AZ_ATTACHMENT_SIZE_LIMIT",
+    [
+      "Choose a smaller attachment or retrieve the file directly from Azure DevOps.",
+    ],
+  );
+}
+
 function normalizeAttachmentDownloadError(error: unknown): AzdoAxiError {
+  if (error instanceof AzdoAxiError) {
+    return error;
+  }
   const normalized = normalizeAzureError(error, "attachment download");
   return new AzdoAxiError(normalized.message, "AZ_ATTACHMENT_DOWNLOAD_FAILED", [
     "Verify attachment access and retry with a writable local destination.",

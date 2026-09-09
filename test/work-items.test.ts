@@ -4,8 +4,12 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import type { CommandRunner } from "../src/az.js";
+import {
+  MAX_BUFFERED_ATTACHMENT_SIZE,
+  type CommandRunner,
+} from "../src/az.js";
 import { parseInvocation } from "../src/arguments.js";
+import { AzdoAxiError } from "../src/errors.js";
 import {
   buildAttachmentDownloadArgs,
   buildCommentsArgs,
@@ -1206,6 +1210,61 @@ describe("work-item evidence inspection", () => {
     } finally {
       rmSync(directory, { force: true, recursive: true });
     }
+  });
+
+  it("preserves structured download errors and rejects known oversized attachments", async () => {
+    const unavailable = new AzdoAxiError(
+      "Azure CLI is not installed or is not on PATH.",
+      "AZ_CLI_UNAVAILABLE",
+      ["Install Azure CLI before retrying."],
+    );
+    const unavailableRunner: CommandRunner = {
+      run: async () => JSON.stringify(attachmentItem),
+      runBinary: async () => Promise.reject(unavailable),
+    };
+    await expect(
+      downloadWorkItemAttachment(
+        unavailableRunner,
+        context,
+        "7",
+        attachmentId,
+        join(tmpdir(), "unavailable.png"),
+      ),
+    ).rejects.toBe(unavailable);
+
+    let binaryCalls = 0;
+    const oversized = {
+      ...attachmentItem,
+      relations: [
+        {
+          ...attachmentItem.relations[0],
+          attributes: {
+            ...attachmentItem.relations[0].attributes,
+            resourceSize: MAX_BUFFERED_ATTACHMENT_SIZE + 1,
+          },
+        },
+      ],
+    };
+    const oversizedRunner: CommandRunner = {
+      run: async () => JSON.stringify(oversized),
+      runBinary: async () => {
+        binaryCalls += 1;
+        return Buffer.alloc(0);
+      },
+    };
+    await expect(
+      downloadWorkItemAttachment(
+        oversizedRunner,
+        context,
+        "7",
+        attachmentId,
+        join(tmpdir(), "oversized.png"),
+      ),
+    ).rejects.toMatchObject({
+      code: "AZ_ATTACHMENT_SIZE_LIMIT",
+      suggestions: [expect.stringContaining("smaller attachment")],
+    });
+    expect(binaryCalls).toBe(0);
   });
 
   it("returns actionable media-type and binary download failures", async () => {

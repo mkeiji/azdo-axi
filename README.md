@@ -177,7 +177,7 @@ azdo-axi work-item comments 123 --all --full
 azdo-axi work-item attachments 123 --limit 100
 ```
 
-Download is explicit and verifies that the selected attachment is related to the requested work item and belongs to the resolved Azure DevOps target. Pass either the listed attachment ID or URL and a new file path or existing directory. The command writes bytes only to that local destination; its structured output never includes file content or credentials:
+Download is explicit and verifies that the selected attachment is related to the requested work item and belongs to the resolved Azure DevOps target. Pass either the listed attachment ID or URL and a new file path or existing directory. The command writes bytes only to that local destination; its structured output never includes file content or credentials. Downloads are bounded to 64 MiB; attachments with a known larger size are rejected before content retrieval:
 
 ```sh
 mkdir -p ./ticket-evidence

@@ -5,6 +5,8 @@ import { AzdoAxiError } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
 
+export const MAX_BUFFERED_ATTACHMENT_SIZE = 64 * 1024 * 1024;
+
 export interface CommandRunner {
   run(args: readonly string[]): Promise<string>;
   runBinary?(args: readonly string[]): Promise<Buffer>;
@@ -38,7 +40,7 @@ export class NodeAzRunner implements CommandRunner {
     try {
       const { stdout } = await execFileAsync("az", [...args], {
         encoding: "buffer",
-        maxBuffer: 64 * 1024 * 1024,
+        maxBuffer: MAX_BUFFERED_ATTACHMENT_SIZE,
         windowsHide: true,
       });
       return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
@@ -53,9 +55,25 @@ export class NodeAzRunner implements CommandRunner {
           ],
         );
       }
+      if (
+        code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
+        /maxbuffer/i.test(String(error))
+      ) {
+        throw bufferedAttachmentSizeError();
+      }
       throw error;
     }
   }
+}
+
+function bufferedAttachmentSizeError(): AzdoAxiError {
+  return new AzdoAxiError(
+    `Attachment exceeds the ${MAX_BUFFERED_ATTACHMENT_SIZE / (1024 * 1024)} MiB download limit.`,
+    "AZ_ATTACHMENT_SIZE_LIMIT",
+    [
+      "Choose a smaller attachment or retrieve the file directly from Azure DevOps.",
+    ],
+  );
 }
 
 export interface AzureDevOpsPreflight {
