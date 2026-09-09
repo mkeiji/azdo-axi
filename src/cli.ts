@@ -11,7 +11,10 @@ import { AzdoAxiError } from "./errors.js";
 import { VERSION } from "./version.js";
 import {
   createWorkItem,
+  downloadWorkItemAttachment,
   linkWorkItem,
+  listWorkItemAttachments,
+  listWorkItemComments,
   listWorkItems,
   queryWorkItems,
   showWorkItem,
@@ -25,11 +28,18 @@ commands:
   work-item show <id>             Show work-item details
   work-item create                Create a work item
   work-item update <id>           Update a work item
-  work-item links <id>            Prepare work-item link inspection
+  work-item links <id>            Inspect work-item links
+  work-item comments <id>         List bounded discussion comments
+  work-item attachments <id>      List attachment metadata only
+  work-item attachment download <work-item-id> <attachment-id-or-url> --path <destination>
+                                  Download one validated attachment to disk
   query --wiql <query>            Prepare a WIQL query
 context flags: --organization <org> --project <project> [--team <team>] [--iteration <iteration>]
 list flags: --assignee <user> --iteration <path> --area <path> [--full]
 show flags: [--full]
+comments flags: [--top <1-200>] [--continuation-token <token>] [--all] [--full]
+attachments flags: [--limit <1-200>]
+attachment download flags: --path <destination>
 create flags: --type <type> --title <title> [--description <text>] [--parent <id>] [--iteration <path>] [--assignee <user>] [--area <path>] [--field <name=value>]...
   create --parent             Persist and verify the hierarchy relation before success
 update flags: [--title <title>] [--description <text>] [--state <state>] [--tags <tags>] [--assignee <user>] [--iteration <path>] [--area <path>] [--field <name=value>]...
@@ -87,6 +97,31 @@ export async function runCli(
         }
         if (invocation.route === "work-item links") {
           return linkWorkItem(runner, context, invocation.id!);
+        }
+        if (invocation.route === "work-item comments") {
+          return listWorkItemComments(
+            runner,
+            context,
+            invocation.id!,
+            invocation,
+          );
+        }
+        if (invocation.route === "work-item attachments") {
+          return listWorkItemAttachments(
+            runner,
+            context,
+            invocation.id!,
+            invocation,
+          );
+        }
+        if (invocation.route === "work-item attachment download") {
+          return downloadWorkItemAttachment(
+            runner,
+            context,
+            invocation.id!,
+            invocation.attachment!,
+            invocation.path!,
+          );
         }
         if (invocation.route === "work-item create") {
           return createWorkItem(runner, context, invocation);

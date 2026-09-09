@@ -128,6 +128,9 @@ azdo-axi work-item show <id> [context options] [--full]
 azdo-axi work-item create [context options] --type <type> --title <title> [mutation options]
 azdo-axi work-item update <id> [context options] [mutation options]
 azdo-axi work-item links <id> [context options]
+azdo-axi work-item comments <id> [context options] [--top <1-200>] [--continuation-token <token>] [--all] [--full]
+azdo-axi work-item attachments <id> [context options] [--limit <1-200>]
+azdo-axi work-item attachment download <work-item-id> <attachment-id-or-url> [context options] --path <destination>
 azdo-axi query [context options] --wiql <query>
 ```
 
@@ -157,6 +160,33 @@ azdo-axi work-item show 123 --full
 ```sh
 azdo-axi work-item links 123
 ```
+
+### Inspect discussion and attachments
+
+Use the separate evidence commands to assess a ticket without changing it. `comments` returns comment IDs, author and timestamp metadata, plus bounded text by default. Use `--full` only when complete comment text is needed; use `--continuation-token` for a later page or `--all` to explicitly traverse all available pages:
+
+```sh
+azdo-axi work-item comments 123 --top 50
+azdo-axi work-item comments 123 --continuation-token '<token from prior output>'
+azdo-axi work-item comments 123 --all --full
+```
+
+`attachments` lists metadata only. It does not retrieve file bytes. Its output includes the attachment ID or normalized URL, filename, media type, size, and available creation details:
+
+```sh
+azdo-axi work-item attachments 123 --limit 100
+```
+
+Download is explicit and verifies that the selected attachment is related to the requested work item and belongs to the resolved Azure DevOps target. Pass either the listed attachment ID or URL and a new file path or existing directory. The command writes bytes only to that local destination; its structured output never includes file content or credentials:
+
+```sh
+mkdir -p ./ticket-evidence
+azdo-axi work-item attachment download 123 \
+  11111111-2222-3333-4444-555555555555 \
+  --path ./ticket-evidence
+```
+
+Do not substitute attachment URLs from another organization or project: the command rejects them rather than following them.
 
 ### Run a custom WIQL query
 
@@ -204,7 +234,7 @@ The update route reads the target first. If all requested values already match, 
 
 ## Output and errors
 
-Successful routed commands emit concise structured [TOON](https://github.com/toon-format/toon) output. Results include resolved context and scope metadata; list and query results include `count` and `items`, link results include `count` and `links`, and mutations include the operation, work-item ID, `noOp`, and resulting item. Empty reads still report a zero count. Errors identify validation, authentication, permission, context, or Azure CLI/extension setup problems and include a suggested next command when one is available.
+Successful routed commands emit concise structured [TOON](https://github.com/toon-format/toon) output. Results include resolved context and scope metadata; list and query results include `count` and `items`, link results include `count` and `links`, evidence listings include the exact work-item ID and `count`, and mutations include the operation, work-item ID, `noOp`, and resulting item. Attachment listings and download results never include attachment bytes or credentials. Empty reads still report a zero count. Errors identify validation, authentication, permission, context, Azure CLI/extension setup, attachment media type, download, or filesystem problems and include a suggested next command when one is available.
 
 ## Pull-request review
 

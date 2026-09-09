@@ -7,6 +7,7 @@ const execFileAsync = promisify(execFile);
 
 export interface CommandRunner {
   run(args: readonly string[]): Promise<string>;
+  runBinary?(args: readonly string[]): Promise<Buffer>;
 }
 
 export class NodeAzRunner implements CommandRunner {
@@ -18,6 +19,29 @@ export class NodeAzRunner implements CommandRunner {
         windowsHide: true,
       });
       return stdout;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        throw new AzdoAxiError(
+          "Azure CLI is not installed or is not on PATH.",
+          "AZ_CLI_UNAVAILABLE",
+          [
+            "Install Azure CLI: https://learn.microsoft.com/cli/azure/install-azure-cli",
+          ],
+        );
+      }
+      throw error;
+    }
+  }
+
+  async runBinary(args: readonly string[]): Promise<Buffer> {
+    try {
+      const { stdout } = await execFileAsync("az", [...args], {
+        encoding: "buffer",
+        maxBuffer: 64 * 1024 * 1024,
+        windowsHide: true,
+      });
+      return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT") {
