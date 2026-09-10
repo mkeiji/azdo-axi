@@ -1148,6 +1148,7 @@ describe("work-item evidence inspection", () => {
       expect.arrayContaining([
         "--resource",
         "attachments",
+        `project=${context.project}`,
         `attachmentId=${attachmentId}`,
       ]),
     );
@@ -1296,19 +1297,46 @@ describe("work-item evidence inspection", () => {
     ).rejects.toMatchObject({ code: "AZ_ATTACHMENT_MEDIA_TYPE_UNSUPPORTED" });
     expect(binaryCalls).toBe(0);
 
+    const secrets = [
+      "token-secret",
+      "access-token-secret",
+      "authorization-secret",
+      "bearer-secret",
+    ];
     const failingRunner: CommandRunner = {
       run: async () => JSON.stringify(attachmentItem),
       runBinary: async () =>
-        Promise.reject(new Error("404 attachment missing token=secret")),
+        Promise.reject({
+          message: "attachment download failed",
+          stderr:
+            `token=${secrets[0]} access_token=${secrets[1]} ` +
+            `authorization=Bearer ${secrets[2]} Bearer ${secrets[3]}`,
+        }),
     };
-    await expect(
-      downloadWorkItemAttachment(
-        failingRunner,
-        context,
-        "7",
-        attachmentId,
-        join(tmpdir(), "y"),
-      ),
-    ).rejects.toMatchObject({ code: "AZ_ATTACHMENT_DOWNLOAD_FAILED" });
+    const error = await downloadWorkItemAttachment(
+      failingRunner,
+      context,
+      "7",
+      attachmentId,
+      join(tmpdir(), "y"),
+    ).then(
+      () => {
+        throw new Error("Expected the attachment download to fail.");
+      },
+      (reason: unknown) => reason as AzdoAxiError,
+    );
+    expect(error).toMatchObject({
+      code: "AZ_ATTACHMENT_DOWNLOAD_FAILED",
+      suggestions: [
+        "Verify attachment access and retry with a writable local destination.",
+      ],
+    });
+    expect(error.message).toContain("token=[redacted]");
+    expect(error.message).toContain("access_token=[redacted]");
+    expect(error.message).toContain("authorization=[redacted]");
+    expect(error.message).toContain("Bearer [redacted]");
+    for (const secret of secrets) {
+      expect(error.message).not.toContain(secret);
+    }
   });
 });

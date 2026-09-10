@@ -888,6 +888,7 @@ export function buildAttachmentDownloadArgs(
     "--resource",
     "attachments",
     "--route-parameters",
+    `project=${context.project}`,
     `attachmentId=${attachmentId}`,
     "--organization",
     context.organization,
@@ -1530,6 +1531,14 @@ function safeAzureErrorDetail(error: unknown): string | undefined {
     .replace(
       /((?:[\"']?)(?:access[_-]?token|refresh[_-]?token|id[_-]?token)(?:[\"']?)\s*:\s*)'[^']*'/gi,
       "$1'[redacted]'",
+    )
+    .replace(
+      /\b(authorization|(?:access[_-]?|refresh[_-]?|id[_-]?)token)\s*=\s*(?:(?:bearer|basic)\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)/gi,
+      "$1=[redacted]",
+    )
+    .replace(
+      /\bbearer\s+(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)/gi,
+      "Bearer [redacted]",
     )
     .replace(
       /((?:[\"']?)(?:password|passwd|pat|token|secret|client[_-]?secret|clientSecret|api[_-]?key|apiKey|private[_-]?key)(?:[\"']?)\s*:\s*)([\"'])[^\"']*\2/gi,
