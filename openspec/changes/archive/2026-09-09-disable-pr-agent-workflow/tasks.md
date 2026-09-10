@@ -6,4 +6,4 @@
 ## 2. Align the automation contract
 
 - [x] 2.1 Update the PR Agent capability specification so its purpose and requirements describe unavailable automation.
-- [x] 2.2 Verify no active repository configuration or documentation claims PR Agent runs, while the CI workflow remains unchanged.
+- [x] 2.2 Verify with regression coverage that no active, non-archived repository configuration or documentation claims PR Agent runs, while archived OpenSpec records remain historical snapshots and the CI workflow remains unchanged.

@@ -16,7 +16,7 @@ None.
 
 ### Modified Capabilities
 
-- `pinned-pr-agent-workflow`: The repository no longer provides or documents the PR Agent pull-request workflow.
+- `pinned-pr-agent-workflow`: The repository no longer provides or actively documents the PR Agent pull-request workflow; archived OpenSpec records remain historical snapshots.
 
 ## Impact
 

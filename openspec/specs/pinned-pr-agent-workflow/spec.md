@@ -8,7 +8,7 @@ Records that the repository does not provide the external PR Agent automation fo
 
 ### Requirement: PR Agent automation is unavailable
 
-The repository SHALL NOT provide a GitHub Actions workflow that invokes `the-pr-agent/pr-agent`, and repository documentation and configuration SHALL NOT claim that PR Agent automation runs for pull requests.
+The repository SHALL NOT provide a GitHub Actions workflow that invokes `the-pr-agent/pr-agent`. Active, non-archived repository documentation and configuration SHALL NOT claim that PR Agent automation runs for pull requests. Archived OpenSpec change records are historical snapshots and are excluded from this requirement.
 
 #### Scenario: Pull request is opened or updated
 
