@@ -271,6 +271,31 @@ describe("argument safety", () => {
       "work-item links",
     );
     expect(
+      parseInvocation("work-item", ["comments", "42", "--top", "10", "--all"]),
+    ).toMatchObject({
+      route: "work-item comments",
+      id: "42",
+      top: 10,
+      all: true,
+    });
+    expect(
+      parseInvocation("work-item", ["attachments", "42", "--limit", "10"]),
+    ).toMatchObject({ route: "work-item attachments", id: "42", limit: 10 });
+    expect(
+      parseInvocation("work-item", [
+        "attachment",
+        "download",
+        "42",
+        "11111111-2222-3333-4444-555555555555",
+        "--path",
+        "./evidence",
+      ]),
+    ).toMatchObject({
+      route: "work-item attachment download",
+      id: "42",
+      path: "./evidence",
+    });
+    expect(
       parseInvocation("query", ["--wiql", "SELECT [System.Id] FROM WorkItems"])
         .route,
     ).toBe("query");
@@ -287,6 +312,18 @@ describe("argument safety", () => {
         "unintended",
       ]),
     ).toThrow("does not accept positional arguments: unintended");
+  });
+
+  it("rejects invalid evidence flags before Azure CLI is invoked", () => {
+    expect(() =>
+      parseInvocation("work-item", ["comments", "42", "--top", "201"]),
+    ).toThrow("Option --top must be an integer from 1 to 200");
+    expect(() =>
+      parseInvocation("work-item", ["attachments", "42", "--full"]),
+    ).toThrow("Comments options are not supported");
+    expect(() =>
+      parseInvocation("work-item", ["attachment", "download", "42"]),
+    ).toThrow("requires a work-item ID, attachment ID or URL, and --path");
   });
 
   it("requires WIQL before Azure CLI is invoked", () => {

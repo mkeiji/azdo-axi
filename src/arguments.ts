@@ -8,6 +8,9 @@ export type Route =
   | "work-item create"
   | "work-item update"
   | "work-item links"
+  | "work-item comments"
+  | "work-item attachments"
+  | "work-item attachment download"
   | "query";
 
 export interface ParsedInvocation {
@@ -28,6 +31,12 @@ export interface ParsedInvocation {
   state?: string;
   tags?: string;
   fields?: Record<string, string>;
+  top?: number;
+  limit?: number;
+  continuationToken?: string;
+  all?: boolean;
+  attachment?: string;
+  path?: string;
 }
 
 const scopeFlags = new Set(["organization", "project", "team", "iteration"]);
@@ -39,6 +48,15 @@ const workItemFilterFlags = new Set([
   "area-path",
   "full",
 ]);
+const workItemEvidenceFlags = new Set([
+  ...scopeFlags,
+  "full",
+  "top",
+  "limit",
+  "continuation-token",
+  "all",
+]);
+const workItemAttachmentDownloadFlags = new Set([...scopeFlags, "path"]);
 const workItemMutationFlags = new Set([
   ...scopeFlags,
   "assignee",
@@ -87,11 +105,43 @@ export function parseInvocation(
   const [action, ...rest] = args;
   if (
     !action ||
-    !["list", "show", "create", "update", "links"].includes(action)
+    ![
+      "list",
+      "show",
+      "create",
+      "update",
+      "links",
+      "comments",
+      "attachments",
+      "attachment",
+    ].includes(action)
   ) {
     throw validationError(
-      "`work-item` requires one of: list, show, create, update, links.",
+      "`work-item` requires one of: list, show, create, update, links, comments, attachments, attachment.",
     );
+  }
+
+  if (action === "attachment") {
+    const [operation, ...downloadArgs] = rest;
+    if (operation !== "download") {
+      throw validationError("`work-item attachment` requires `download`.", [
+        "Run `azdo-axi work-item attachment download <work-item-id> <attachment-id-or-url> --path <destination>`.",
+      ]);
+    }
+    const values = parseFlags(downloadArgs, workItemAttachmentDownloadFlags);
+    const positions = positional(downloadArgs);
+    if (positions.length !== 2 || !stringValue(values.path)) {
+      throw validationError(
+        "`work-item attachment download` requires a work-item ID, attachment ID or URL, and --path <destination>.",
+      );
+    }
+    return {
+      route: "work-item attachment download",
+      id: positions[0],
+      attachment: positions[1],
+      path: stringValue(values.path),
+      ...canonicalWorkItemValues(values),
+    };
   }
 
   const values = parseFlags(
@@ -100,16 +150,24 @@ export function parseInvocation(
       ? workItemFilterFlags
       : action === "show"
         ? new Set([...scopeFlags, "full"])
-        : action === "create" || action === "update"
-          ? workItemMutationFlags
-          : scopeFlags,
-    new Set(["full"]),
+        : action === "comments" || action === "attachments"
+          ? workItemEvidenceFlags
+          : action === "create" || action === "update"
+            ? workItemMutationFlags
+            : scopeFlags,
+    new Set(["full", "all"]),
     action === "create" || action === "update"
       ? new Set(["field", "tag"])
       : new Set(),
   );
-  if (action === "show" || action === "update" || action === "links") {
-    const id = positional(rest, new Set(["full"]));
+  if (
+    action === "show" ||
+    action === "update" ||
+    action === "links" ||
+    action === "comments" ||
+    action === "attachments"
+  ) {
+    const id = positional(rest, new Set(["full", "all"]));
     if (id.length !== 1) {
       throw validationError(
         `\`work-item ${action}\` requires exactly one work-item ID.`,
@@ -120,10 +178,11 @@ export function parseInvocation(
       route: `work-item ${action}` as Route,
       id: id[0],
       ...canonicalWorkItemValues(values),
+      ...evidenceValues(values, action),
     };
   }
 
-  const positions = positional(rest, new Set(["full"]));
+  const positions = positional(rest, new Set(["full", "all"]));
   if (positions.length > 0) {
     throw validationError(
       `\`work-item ${action}\` does not accept positional arguments.`,
@@ -184,6 +243,54 @@ function canonicalWorkItemValues(
     ...(Object.keys(fields).length > 0 ? { fields } : {}),
     ...(values.full === true ? { full: true } : {}),
   };
+}
+
+function evidenceValues(
+  values: Record<string, string | boolean | string[] | undefined>,
+  action: string,
+): Omit<ParsedInvocation, "route" | "id"> {
+  if (action !== "comments" && action !== "attachments") return {};
+  const top = boundedOption(values.top, "top", 200);
+  const limit = boundedOption(values.limit, "limit", 200);
+  if (action === "comments" && limit !== undefined) {
+    throw validationError(
+      "Option --limit is only supported by `work-item attachments`.",
+    );
+  }
+  if (
+    action === "attachments" &&
+    (top !== undefined ||
+      values["continuation-token"] !== undefined ||
+      values.all === true ||
+      values.full === true)
+  ) {
+    throw validationError(
+      "Comments options are not supported by `work-item attachments`.",
+    );
+  }
+  return {
+    ...(top !== undefined ? { top } : {}),
+    ...(limit !== undefined ? { limit } : {}),
+    ...(stringValue(values["continuation-token"])
+      ? { continuationToken: stringValue(values["continuation-token"]) }
+      : {}),
+    ...(values.all === true ? { all: true } : {}),
+  };
+}
+
+function boundedOption(
+  value: string | boolean | string[] | undefined,
+  name: string,
+  maximum: number,
+): number | undefined {
+  const text = stringValue(value);
+  if (text === undefined) return undefined;
+  if (!/^\d+$/.test(text) || Number(text) < 1 || Number(text) > maximum) {
+    throw validationError(
+      `Option --${name} must be an integer from 1 to ${maximum}.`,
+    );
+  }
+  return Number(text);
 }
 
 function rejectConflictingAliases(

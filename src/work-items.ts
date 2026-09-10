@@ -1,4 +1,10 @@
-import type { CommandRunner } from "./az.js";
+import { open, stat, unlink } from "node:fs/promises";
+import { basename, resolve } from "node:path";
+
+import {
+  MAX_ATTACHMENT_DOWNLOAD_SIZE,
+  type CommandRunner,
+} from "./az.js";
 import type { AzureDevOpsContext } from "./context.js";
 import { isValidFieldReferenceName } from "./field-validation.js";
 import { AzdoAxiError } from "./errors.js";
@@ -44,6 +50,40 @@ export interface WorkItemLinksResult extends Record<string, unknown> {
   item?: Record<string, unknown>;
 }
 
+export interface WorkItemCommentsResult extends Record<string, unknown> {
+  context: AzureDevOpsContext;
+  organization: string;
+  project: string;
+  workItemId: string;
+  count: number;
+  comments: Array<Record<string, unknown>>;
+  continuationToken?: string;
+}
+
+export interface WorkItemAttachmentsResult extends Record<string, unknown> {
+  context: AzureDevOpsContext;
+  organization: string;
+  project: string;
+  workItemId: string;
+  count: number;
+  attachments: Array<Record<string, unknown>>;
+  truncated?: boolean;
+}
+
+export interface WorkItemAttachmentDownloadResult extends Record<
+  string,
+  unknown
+> {
+  context: AzureDevOpsContext;
+  organization: string;
+  project: string;
+  workItemId: string;
+  attachmentId: string;
+  path: string;
+  size: number;
+  contentType?: string;
+}
+
 export interface WorkItemMutationOptions {
   workItemType?: string;
   title?: string;
@@ -72,6 +112,10 @@ export interface WorkItemMutationResult extends Record<string, unknown> {
 
 const DEFAULT_TEXT_LIMIT = 2_000;
 const DEFAULT_HISTORY_LIMIT = 20;
+const DEFAULT_COMMENT_PAGE_SIZE = 50;
+const DEFAULT_ATTACHMENT_LIMIT = 100;
+const MAX_EVIDENCE_LIMIT = 200;
+const MAX_COMMENT_PAGES = 1_000;
 const FIELDS = {
   type: "System.WorkItemType",
   title: "System.Title",
@@ -626,6 +670,228 @@ export async function linkWorkItem(
   };
 }
 
+export async function listWorkItemComments(
+  runner: CommandRunner,
+  context: AzureDevOpsContext,
+  id: string,
+  options: Pick<WorkItemReadOptions, "full"> & {
+    top?: number;
+    continuationToken?: string;
+    all?: boolean;
+  },
+): Promise<WorkItemCommentsResult> {
+  validateWorkItemId(id);
+  const top = options.top ?? DEFAULT_COMMENT_PAGE_SIZE;
+  const comments: Array<Record<string, unknown>> = [];
+  const seen = new Set<string>();
+  let continuationToken = options.continuationToken;
+  let pageCount = 0;
+
+  do {
+    if (pageCount++ >= MAX_COMMENT_PAGES) {
+      throw new AzdoAxiError(
+        "Azure DevOps comment pagination exceeded the safe page limit.",
+        "AZ_COMMENTS_PAGINATION_LIMIT",
+        ["Use --continuation-token to resume from a smaller bounded page."],
+      );
+    }
+    const raw = await runAzureJson(
+      runner,
+      buildCommentsArgs(context, id, top, continuationToken),
+      `work-item comments ${id}`,
+    );
+    const page = commentPage(raw, Boolean(options.full));
+    for (const comment of page.comments) {
+      const key = String(comment.id);
+      if (!seen.has(key)) {
+        seen.add(key);
+        comments.push(comment);
+      }
+    }
+    continuationToken = page.continuationToken;
+  } while (options.all && continuationToken);
+
+  return {
+    context,
+    organization: context.organization,
+    project: context.project,
+    workItemId: id,
+    count: comments.length,
+    comments,
+    ...(!options.all && continuationToken ? { continuationToken } : {}),
+  };
+}
+
+export function buildCommentsArgs(
+  context: AzureDevOpsContext,
+  id: string,
+  top = DEFAULT_COMMENT_PAGE_SIZE,
+  continuationToken?: string,
+): string[] {
+  validateWorkItemId(id);
+  if (!Number.isInteger(top) || top < 1 || top > MAX_EVIDENCE_LIMIT) {
+    throw new AzdoAxiError(
+      `Comment page size must be an integer from 1 to ${MAX_EVIDENCE_LIMIT}.`,
+      "VALIDATION_ERROR",
+    );
+  }
+  return [
+    "devops",
+    "invoke",
+    "--area",
+    "wit",
+    "--resource",
+    "comments",
+    "--route-parameters",
+    `project=${context.project}`,
+    `workItemId=${id}`,
+    "--query-parameters",
+    `$top=${top}`,
+    ...(continuationToken ? [`continuationToken=${continuationToken}`] : []),
+    "--organization",
+    context.organization,
+    "--api-version",
+    "7.1-preview.4",
+    "--output",
+    "json",
+    "--only-show-errors",
+  ];
+}
+
+export async function listWorkItemAttachments(
+  runner: CommandRunner,
+  context: AzureDevOpsContext,
+  id: string,
+  options: { limit?: number } = {},
+): Promise<WorkItemAttachmentsResult> {
+  validateWorkItemId(id);
+  const limit = options.limit ?? DEFAULT_ATTACHMENT_LIMIT;
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_EVIDENCE_LIMIT) {
+    throw new AzdoAxiError(
+      `Attachment limit must be an integer from 1 to ${MAX_EVIDENCE_LIMIT}.`,
+      "VALIDATION_ERROR",
+    );
+  }
+  const item = await readRawWorkItem(
+    runner,
+    context,
+    id,
+    `work-item attachments ${id}`,
+    false,
+  );
+  const available = attachmentRelations(item.relations, context);
+  const attachments = available.slice(0, limit).map(attachmentOutput);
+  return {
+    context,
+    organization: context.organization,
+    project: context.project,
+    workItemId: id,
+    count: attachments.length,
+    attachments,
+    ...(available.length > attachments.length ? { truncated: true } : {}),
+  };
+}
+
+export async function downloadWorkItemAttachment(
+  runner: CommandRunner,
+  context: AzureDevOpsContext,
+  workItemId: string,
+  selector: string,
+  destination: string,
+): Promise<WorkItemAttachmentDownloadResult> {
+  validateWorkItemId(workItemId);
+  if (!selector.trim()) {
+    throw new AzdoAxiError(
+      "An attachment ID or URL is required.",
+      "VALIDATION_ERROR",
+    );
+  }
+  if (!destination.trim()) {
+    throw new AzdoAxiError("A download path is required.", "VALIDATION_ERROR");
+  }
+  const selected = parseAttachmentSelector(selector, context);
+  const item = await readRawWorkItem(
+    runner,
+    context,
+    workItemId,
+    `work-item attachment download ${workItemId}`,
+    false,
+  );
+  const attachment = attachmentRelations(item.relations, context).find(
+    (relation) => relation.id === selected.id,
+  );
+  if (!attachment) {
+    throw new AzdoAxiError(
+      `Attachment ${selected.id} is not related to work item ${workItemId}.`,
+      "AZ_ATTACHMENT_NOT_FOUND",
+      [
+        "Run `azdo-axi work-item attachments <work-item-id>` to select a listed attachment.",
+      ],
+    );
+  }
+  assertSupportedAttachmentMediaType(attachment.contentType);
+  assertAttachmentDownloadSize(attachment.size);
+  if (!runner.runToFile) {
+    throw new AzdoAxiError(
+      "Binary-safe attachment download is unavailable for this Azure runner.",
+      "AZ_ATTACHMENT_DOWNLOAD_UNAVAILABLE",
+      ["Use the installed azdo-axi CLI to download the attachment."],
+    );
+  }
+  const path = await resolveDownloadPath(
+    destination,
+    attachment.filename,
+    attachment.id,
+  );
+  await reserveDownloadPath(path);
+  try {
+    await runner.runToFile(
+      buildAttachmentDownloadArgs(context, attachment.id),
+      path,
+    );
+    const size = (await stat(path)).size;
+    assertAttachmentDownloadSize(size);
+    return {
+      context,
+      organization: context.organization,
+      project: context.project,
+      workItemId,
+      attachmentId: attachment.id,
+      path,
+      size,
+      ...(attachment.contentType ? { contentType: attachment.contentType } : {}),
+    };
+  } catch (error) {
+    await removeReservedDownloadPath(path);
+    throw normalizeAttachmentDownloadError(error);
+  }
+}
+
+export function buildAttachmentDownloadArgs(
+  context: AzureDevOpsContext,
+  attachmentId: string,
+): string[] {
+  if (!isAttachmentId(attachmentId)) {
+    throw new AzdoAxiError("Attachment ID is not valid.", "VALIDATION_ERROR");
+  }
+  return [
+    "devops",
+    "invoke",
+    "--area",
+    "wit",
+    "--resource",
+    "attachments",
+    "--route-parameters",
+    `project=${context.project}`,
+    `attachmentId=${attachmentId}`,
+    "--organization",
+    context.organization,
+    "--api-version",
+    "7.1",
+    "--only-show-errors",
+  ];
+}
+
 export function buildListWiql(options: WorkItemReadOptions = {}): string {
   const predicates = [
     "[System.TeamProject] = @project",
@@ -782,6 +1048,360 @@ export function linkRelations(value: unknown): Array<Record<string, unknown>> {
   });
 }
 
+function commentPage(
+  raw: unknown,
+  full: boolean,
+): { comments: Array<Record<string, unknown>>; continuationToken?: string } {
+  const page = asRecord(raw);
+  if (!Array.isArray(page.value)) {
+    throw new AzdoAxiError(
+      "Azure DevOps comments response did not contain a value array.",
+      "AZ_COMMENTS_INVALID_OUTPUT",
+      [
+        "Retry the bounded comments request or update the Azure DevOps extension.",
+      ],
+    );
+  }
+  const continuationToken = stringProperty(
+    page.continuationToken ?? page.continuationtoken,
+  );
+  return {
+    comments: page.value.map((value) => commentOutput(value, full)),
+    ...(continuationToken ? { continuationToken } : {}),
+  };
+}
+
+function commentOutput(value: unknown, full: boolean): Record<string, unknown> {
+  const comment = asRecord(value);
+  if (typeof comment.id !== "number" && typeof comment.id !== "string") {
+    throw new AzdoAxiError(
+      "Azure DevOps returned a discussion comment without an ID.",
+      "AZ_COMMENTS_INVALID_OUTPUT",
+      ["Retry the request or inspect the work item in Azure DevOps."],
+    );
+  }
+  if (typeof comment.text !== "string") {
+    throw new AzdoAxiError(
+      "Azure DevOps returned a discussion comment without text.",
+      "AZ_COMMENTS_INVALID_OUTPUT",
+      ["Retry the request or inspect the work item in Azure DevOps."],
+    );
+  }
+  const result = compact({
+    id: comment.id,
+    author: personName(comment.createdBy ?? comment.modifiedBy),
+    createdDate: comment.createdDate,
+    modifiedDate: comment.modifiedDate,
+  });
+  if (comment.text.length === 0) {
+    result.text = "";
+  } else {
+    addBoundedText(result, "text", comment.text, full);
+  }
+  return result;
+}
+
+interface AttachmentRelation {
+  id: string;
+  url: string;
+  filename?: string;
+  contentType?: string;
+  size?: number;
+  createdDate?: string;
+  modifiedDate?: string;
+}
+
+function attachmentRelations(
+  value: unknown,
+  context: AzureDevOpsContext,
+): AttachmentRelation[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((relation) => isAttachmentRelation(asRecord(relation).rel))
+    .map((relation) => attachmentRelation(asRecord(relation), context));
+}
+
+function isAttachmentRelation(value: unknown): boolean {
+  return value === "AttachedFile" || value === "System.LinkTypes.AttachedFile";
+}
+
+function attachmentRelation(
+  relation: Record<string, unknown>,
+  context: AzureDevOpsContext,
+): AttachmentRelation {
+  if (typeof relation.url !== "string") {
+    throw new AzdoAxiError(
+      "Azure DevOps returned an attachment relation without a URL.",
+      "AZ_ATTACHMENT_RELATION_INVALID",
+      ["Inspect the work-item attachment relation in Azure DevOps and retry."],
+    );
+  }
+  const parsed = parseAttachmentUrl(relation.url, context);
+  const attributes = asRecord(relation.attributes);
+  return {
+    id: parsed.id,
+    url: parsed.url,
+    ...(stringProperty(attributes.name ?? attributes.fileName)
+      ? { filename: stringProperty(attributes.name ?? attributes.fileName) }
+      : {}),
+    ...(stringProperty(attributes.contentType)
+      ? { contentType: stringProperty(attributes.contentType) }
+      : {}),
+    ...(numberProperty(attributes.resourceSize ?? attributes.size) !== undefined
+      ? { size: numberProperty(attributes.resourceSize ?? attributes.size) }
+      : {}),
+    ...(stringProperty(attributes.resourceCreatedDate ?? attributes.createdDate)
+      ? {
+          createdDate: stringProperty(
+            attributes.resourceCreatedDate ?? attributes.createdDate,
+          ),
+        }
+      : {}),
+    ...(stringProperty(
+      attributes.resourceModifiedDate ?? attributes.modifiedDate,
+    )
+      ? {
+          modifiedDate: stringProperty(
+            attributes.resourceModifiedDate ?? attributes.modifiedDate,
+          ),
+        }
+      : {}),
+  };
+}
+
+function attachmentOutput(
+  attachment: AttachmentRelation,
+): Record<string, unknown> {
+  return compact({
+    id: attachment.id,
+    url: attachment.url,
+    filename: attachment.filename,
+    contentType: attachment.contentType,
+    size: attachment.size,
+    createdDate: attachment.createdDate,
+    modifiedDate: attachment.modifiedDate,
+  });
+}
+
+function parseAttachmentSelector(
+  selector: string,
+  context: AzureDevOpsContext,
+): { id: string } {
+  if (isAttachmentId(selector)) return { id: selector.toLowerCase() };
+  return parseAttachmentUrl(selector, context);
+}
+
+function parseAttachmentUrl(
+  value: string,
+  context: AzureDevOpsContext,
+): { id: string; url: string } {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new AzdoAxiError(
+      "Attachment URL is malformed.",
+      "AZ_ATTACHMENT_RELATION_INVALID",
+      ["Select an attachment ID or URL returned by `work-item attachments`."],
+    );
+  }
+  if (url.protocol !== "https:" || url.username || url.password) {
+    throw new AzdoAxiError(
+      "Attachment URL must be an HTTPS Azure DevOps URL without credentials.",
+      "AZ_ATTACHMENT_URL_SCOPE_MISMATCH",
+      ["Use an attachment URL returned for the resolved Azure DevOps context."],
+    );
+  }
+  assertAttachmentUrlScope(url, context);
+  const match = url.pathname.match(/\/attachments\/([^/]+)\/?$/i);
+  const id = match?.[1];
+  if (!id || !isAttachmentId(id)) {
+    throw new AzdoAxiError(
+      "Attachment URL does not contain a supported attachment ID.",
+      "AZ_ATTACHMENT_RELATION_INVALID",
+      ["Select an attachment URL returned by `work-item attachments`."],
+    );
+  }
+  return { id: id.toLowerCase(), url: `${url.origin}${url.pathname}` };
+}
+
+function assertAttachmentUrlScope(url: URL, context: AzureDevOpsContext): void {
+  let organizationUrl: URL | undefined;
+  try {
+    organizationUrl = new URL(context.organization);
+  } catch {
+    // Azure CLI also accepts an organization name; support its canonical dev.azure.com form.
+  }
+  const segments = url.pathname.split("/").filter(Boolean);
+  if (organizationUrl) {
+    const expectedSegments = organizationUrl.pathname
+      .split("/")
+      .filter(Boolean);
+    if (
+      url.hostname.toLowerCase() !== organizationUrl.hostname.toLowerCase() ||
+      expectedSegments.some(
+        (segment, index) => !sameAzureSegment(segments[index], segment),
+      )
+    ) {
+      throw attachmentScopeMismatch();
+    }
+    const projectSegment = segments[expectedSegments.length];
+    if (
+      projectSegment &&
+      projectSegment !== "_apis" &&
+      !sameAzureSegment(projectSegment, context.project)
+    ) {
+      throw attachmentScopeMismatch();
+    }
+    return;
+  }
+  const organization = context.organization.toLowerCase();
+  if (!(
+    (url.hostname.toLowerCase() === "dev.azure.com" &&
+      sameAzureSegment(segments[0], organization)) ||
+    url.hostname.toLowerCase() === `${organization}.visualstudio.com`
+  )) {
+    throw attachmentScopeMismatch();
+  }
+  const projectIndex = url.hostname.toLowerCase() === "dev.azure.com" ? 1 : 0;
+  const projectSegment = segments[projectIndex];
+  if (
+    projectSegment &&
+    projectSegment !== "_apis" &&
+    !sameAzureSegment(projectSegment, context.project)
+  ) {
+    throw attachmentScopeMismatch();
+  }
+}
+
+function sameAzureSegment(
+  value: string | undefined,
+  expected: string,
+): boolean {
+  if (value === undefined) return false;
+  try {
+    return decodeURIComponent(value).toLowerCase() === expected.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+function attachmentScopeMismatch(): AzdoAxiError {
+  return new AzdoAxiError(
+    "Attachment URL does not belong to the resolved Azure DevOps organization and project.",
+    "AZ_ATTACHMENT_URL_SCOPE_MISMATCH",
+    ["Run `azdo-axi context` and select an attachment listed for that target."],
+  );
+}
+
+function isAttachmentId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    value,
+  );
+}
+
+function assertSupportedAttachmentMediaType(
+  contentType: string | undefined,
+): void {
+  if (!contentType) return;
+  if (
+    /^(?:text\/html|application\/(?:xhtml\+xml|javascript|ecmascript)|image\/svg\+xml)$/i.test(
+      contentType,
+    )
+  ) {
+    throw new AzdoAxiError(
+      `Attachment media type ${contentType} is not supported for download.`,
+      "AZ_ATTACHMENT_MEDIA_TYPE_UNSUPPORTED",
+      [
+        "Download a non-renderable file type or inspect the attachment in Azure DevOps.",
+      ],
+    );
+  }
+}
+
+async function resolveDownloadPath(
+  destination: string,
+  filename: string | undefined,
+  attachmentId: string,
+): Promise<string> {
+  const resolved = resolve(destination);
+  try {
+    if ((await stat(resolved)).isDirectory()) {
+      return resolve(resolved, safeAttachmentFilename(filename, attachmentId));
+    }
+  } catch {
+    if (destination.endsWith("/") || destination.endsWith("\\")) {
+      throw new AzdoAxiError(
+        `Download directory does not exist: ${resolved}.`,
+        "AZ_ATTACHMENT_WRITE_FAILED",
+        ["Create the directory first or provide a new file path."],
+      );
+    }
+  }
+  return resolved;
+}
+
+function safeAttachmentFilename(
+  filename: string | undefined,
+  attachmentId: string,
+): string {
+  const name = basename(filename ?? "")
+    .replace(/[\x00-\x1f]/g, "")
+    .trim();
+  return name && name !== "." && name !== ".." ? name : attachmentId;
+}
+
+async function reserveDownloadPath(path: string): Promise<void> {
+  try {
+    await (await open(path, "wx")).close();
+  } catch {
+    throw new AzdoAxiError(
+      `Could not write the attachment to ${path}.`,
+      "AZ_ATTACHMENT_WRITE_FAILED",
+      ["Choose a writable new file path or an existing writable directory."],
+    );
+  }
+}
+
+async function removeReservedDownloadPath(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch {
+    // The Azure CLI may not have created a file before reporting its error.
+  }
+}
+
+function assertAttachmentDownloadSize(size: number | undefined): void {
+  if (size === undefined || size <= MAX_ATTACHMENT_DOWNLOAD_SIZE) return;
+  throw new AzdoAxiError(
+    `Attachment size ${size} bytes exceeds the ${MAX_ATTACHMENT_DOWNLOAD_SIZE / (1024 * 1024)} MiB download limit.`,
+    "AZ_ATTACHMENT_SIZE_LIMIT",
+    [
+      "Choose a smaller attachment or retrieve the file directly from Azure DevOps.",
+    ],
+  );
+}
+
+function normalizeAttachmentDownloadError(error: unknown): AzdoAxiError {
+  if (error instanceof AzdoAxiError) {
+    return error;
+  }
+  const normalized = normalizeAzureError(error, "attachment download");
+  return new AzdoAxiError(normalized.message, "AZ_ATTACHMENT_DOWNLOAD_FAILED", [
+    "Verify attachment access and retry with a writable local destination.",
+  ]);
+}
+
+function stringProperty(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function numberProperty(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
 function linkCategory(type: string | undefined): string {
   if (type === "System.LinkTypes.Hierarchy-Reverse") return "parent";
   if (type === "System.LinkTypes.Hierarchy-Forward") return "child";
@@ -925,6 +1545,14 @@ function safeAzureErrorDetail(error: unknown): string | undefined {
     .replace(
       /((?:[\"']?)(?:access[_-]?token|refresh[_-]?token|id[_-]?token)(?:[\"']?)\s*:\s*)'[^']*'/gi,
       "$1'[redacted]'",
+    )
+    .replace(
+      /\b(authorization|(?:access[_-]?|refresh[_-]?|id[_-]?)token)\s*=\s*(?:(?:bearer|basic)\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)/gi,
+      "$1=[redacted]",
+    )
+    .replace(
+      /\bbearer\s+(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)/gi,
+      "Bearer [redacted]",
     )
     .replace(
       /((?:[\"']?)(?:password|passwd|pat|token|secret|client[_-]?secret|clientSecret|api[_-]?key|apiKey|private[_-]?key)(?:[\"']?)\s*:\s*)([\"'])[^\"']*\2/gi,

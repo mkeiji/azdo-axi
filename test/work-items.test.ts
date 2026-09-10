@@ -1,16 +1,29 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
-import type { CommandRunner } from "../src/az.js";
-import { parseInvocation } from "../src/arguments.js";
 import {
+  MAX_ATTACHMENT_DOWNLOAD_SIZE,
+  type CommandRunner,
+} from "../src/az.js";
+import { parseInvocation } from "../src/arguments.js";
+import { AzdoAxiError } from "../src/errors.js";
+import {
+  buildAttachmentDownloadArgs,
+  buildCommentsArgs,
   buildCreateWorkItemArgs,
   buildParentRelationArgs,
   buildListWiql,
   buildUpdateWorkItemArgs,
   createWorkItem,
   detailItem,
+  downloadWorkItemAttachment,
   linkRelations,
   linkWorkItem,
+  listWorkItemAttachments,
+  listWorkItemComments,
   listWorkItems,
   normalizeAzureError,
   queryWorkItems,
@@ -426,7 +439,7 @@ describe("work-item mutations", () => {
 
   it("rejects invalid mutation payloads before Azure writes", () => {
     expect(() => parseInvocation("work-item", ["delete", "9"])).toThrow(
-      "requires one of: list, show, create, update, links",
+      "requires one of: list, show, create, update, links, comments, attachments, attachment",
     );
     expect(() =>
       buildCreateWorkItemArgs(context, {
@@ -953,5 +966,379 @@ describe("work-item reads", () => {
       code: "WORK_ITEM_NOT_FOUND",
       suggestions: [expect.stringContaining("work-item ID")],
     });
+  });
+});
+
+describe("work-item evidence inspection", () => {
+  const attachmentId = "11111111-2222-3333-4444-555555555555";
+  const attachmentUrl = `https://dev.azure.com/example/project/_apis/wit/attachments/${attachmentId}?fileName=screen.png`;
+  const attachmentItem = {
+    id: 7,
+    relations: [
+      {
+        rel: "AttachedFile",
+        url: attachmentUrl,
+        attributes: {
+          name: "screen.png",
+          contentType: "image/png",
+          resourceSize: 12,
+          resourceCreatedDate: "2026-01-02T03:04:05Z",
+        },
+      },
+    ],
+  };
+
+  it("lists a bounded comment page with compact metadata and continuation", async () => {
+    const calls: string[][] = [];
+    const result = await listWorkItemComments(
+      runnerFor(
+        {
+          count: 1,
+          value: [
+            {
+              id: 17,
+              createdBy: { displayName: "Ada" },
+              createdDate: "2026-01-01T00:00:00Z",
+              modifiedDate: "2026-01-01T01:00:00Z",
+              text: "x".repeat(2_005),
+            },
+          ],
+          continuationToken: "next-page",
+        },
+        calls,
+      ),
+      context,
+      "7",
+      { top: 10 },
+    );
+
+    expect(result).toMatchObject({
+      organization: context.organization,
+      project: context.project,
+      workItemId: "7",
+      count: 1,
+      continuationToken: "next-page",
+      comments: [
+        {
+          id: 17,
+          author: "Ada",
+          textTruncated: true,
+          textOriginalSize: 2_005,
+        },
+      ],
+    });
+    expect(result.comments[0]?.text).toHaveLength(2_000);
+    expect(calls[0]).toEqual(
+      expect.arrayContaining([
+        "devops",
+        "invoke",
+        "--resource",
+        "comments",
+        "project=project",
+        "workItemId=7",
+        "$top=10",
+        "--organization",
+        context.organization,
+      ]),
+    );
+    expect(buildCommentsArgs(context, "7", 10, "next-page")).toContain(
+      "continuationToken=next-page",
+    );
+  });
+
+  it("traverses comment pages without duplicating comment IDs", async () => {
+    const calls: string[][] = [];
+    const result = await listWorkItemComments(
+      runnerForSequence(
+        [
+          { value: [{ id: 1, text: "first" }], continuationToken: "two" },
+          {
+            value: [
+              { id: 1, text: "first" },
+              { id: 2, text: "second" },
+            ],
+          },
+        ],
+        calls,
+      ),
+      context,
+      "7",
+      { all: true, full: true },
+    );
+    expect(result).toMatchObject({
+      count: 2,
+      comments: [{ id: 1 }, { id: 2 }],
+    });
+    expect(result).not.toHaveProperty("continuationToken");
+    expect(calls[1]).toContain("continuationToken=two");
+  });
+
+  it("reports an empty discussion and rejects malformed comment pages", async () => {
+    await expect(
+      listWorkItemComments(
+        runnerFor({ count: 0, value: [] }, []),
+        context,
+        "7",
+        {},
+      ),
+    ).resolves.toMatchObject({ count: 0, comments: [] });
+    await expect(
+      listWorkItemComments(runnerFor({ count: 1 }, []), context, "7", {}),
+    ).rejects.toMatchObject({ code: "AZ_COMMENTS_INVALID_OUTPUT" });
+  });
+
+  it("lists attachment metadata without requesting binary content", async () => {
+    const calls: string[][] = [];
+    let binaryCalls = 0;
+    const runner: CommandRunner = {
+      run: async (args) => {
+        calls.push([...args]);
+        return JSON.stringify(attachmentItem);
+      },
+      runToFile: async () => {
+        binaryCalls += 1;
+        throw new Error(
+          "attachment content must not be requested by a listing",
+        );
+      },
+    };
+    const result = await listWorkItemAttachments(runner, context, "7", {
+      limit: 1,
+    });
+    expect(result).toMatchObject({
+      organization: context.organization,
+      project: context.project,
+      workItemId: "7",
+      count: 1,
+      attachments: [
+        {
+          id: attachmentId,
+          url: attachmentUrl.split("?")[0],
+          filename: "screen.png",
+          contentType: "image/png",
+          size: 12,
+          createdDate: "2026-01-02T03:04:05Z",
+        },
+      ],
+    });
+    expect(binaryCalls).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("relations");
+  });
+
+  it("handles no attachment relations and rejects malformed relations", async () => {
+    await expect(
+      listWorkItemAttachments(
+        runnerFor({ id: 7, relations: [] }, []),
+        context,
+        "7",
+      ),
+    ).resolves.toMatchObject({ count: 0, attachments: [] });
+    await expect(
+      listWorkItemAttachments(
+        runnerFor({ id: 7, relations: [{ rel: "AttachedFile" }] }, []),
+        context,
+        "7",
+      ),
+    ).rejects.toMatchObject({ code: "AZ_ATTACHMENT_RELATION_INVALID" });
+  });
+
+  it("normalizes attachment URLs and rejects a foreign organization before download", async () => {
+    expect(buildAttachmentDownloadArgs(context, attachmentId)).toEqual(
+      expect.arrayContaining([
+        "--resource",
+        "attachments",
+        `project=${context.project}`,
+        `attachmentId=${attachmentId}`,
+      ]),
+    );
+    const calls: string[][] = [];
+    await expect(
+      downloadWorkItemAttachment(
+        runnerFor(attachmentItem, calls),
+        context,
+        "7",
+        `https://dev.azure.com/other/project/_apis/wit/attachments/${attachmentId}`,
+        join(tmpdir(), "not-written.png"),
+      ),
+    ).rejects.toMatchObject({ code: "AZ_ATTACHMENT_URL_SCOPE_MISMATCH" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("downloads through a binary-safe file target without returning bytes", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "azdo-axi-attachment-"));
+    try {
+      const calls: string[][] = [];
+      const outputCalls: Array<{ args: string[]; path: string }> = [];
+      const attachmentBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+      const runner: CommandRunner = {
+        run: async (args) => {
+          calls.push([...args]);
+          return JSON.stringify(attachmentItem);
+        },
+        runToFile: async (args, path) => {
+          outputCalls.push({ args: [...args], path });
+          writeFileSync(path, attachmentBytes);
+        },
+      };
+      const result = await downloadWorkItemAttachment(
+        runner,
+        context,
+        "7",
+        attachmentId,
+        directory,
+      );
+      const path = join(directory, "screen.png");
+      expect(readFileSync(path)).toEqual(attachmentBytes);
+      expect(result).toMatchObject({
+        workItemId: "7",
+        attachmentId,
+        path,
+        size: attachmentBytes.length,
+        contentType: "image/png",
+      });
+      expect(result).not.toHaveProperty("content");
+      expect(JSON.stringify(result)).not.toContain(attachmentBytes.toString("hex"));
+      expect(calls).toHaveLength(1);
+      expect(outputCalls).toEqual([
+        {
+          args: expect.arrayContaining([
+            "devops",
+            "invoke",
+            "--resource",
+            "attachments",
+          ]),
+          path,
+        },
+      ]);
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("preserves structured download errors and rejects known oversized attachments", async () => {
+    const unavailable = new AzdoAxiError(
+      "Azure CLI is not installed or is not on PATH.",
+      "AZ_CLI_UNAVAILABLE",
+      ["Install Azure CLI before retrying."],
+    );
+    const unavailableRunner: CommandRunner = {
+      run: async () => JSON.stringify(attachmentItem),
+      runToFile: async () => Promise.reject(unavailable),
+    };
+    await expect(
+      downloadWorkItemAttachment(
+        unavailableRunner,
+        context,
+        "7",
+        attachmentId,
+        join(tmpdir(), "unavailable.png"),
+      ),
+    ).rejects.toBe(unavailable);
+
+    let binaryCalls = 0;
+    const oversized = {
+      ...attachmentItem,
+      relations: [
+        {
+          ...attachmentItem.relations[0],
+          attributes: {
+            ...attachmentItem.relations[0].attributes,
+            resourceSize: MAX_ATTACHMENT_DOWNLOAD_SIZE + 1,
+          },
+        },
+      ],
+    };
+    const oversizedRunner: CommandRunner = {
+      run: async () => JSON.stringify(oversized),
+      runToFile: async () => {
+        binaryCalls += 1;
+      },
+    };
+    await expect(
+      downloadWorkItemAttachment(
+        oversizedRunner,
+        context,
+        "7",
+        attachmentId,
+        join(tmpdir(), "oversized.png"),
+      ),
+    ).rejects.toMatchObject({
+      code: "AZ_ATTACHMENT_SIZE_LIMIT",
+      suggestions: [expect.stringContaining("smaller attachment")],
+    });
+    expect(binaryCalls).toBe(0);
+  });
+
+  it("returns actionable media-type and binary download failures", async () => {
+    const unsupported = {
+      ...attachmentItem,
+      relations: [
+        {
+          ...attachmentItem.relations[0],
+          attributes: { contentType: "text/html" },
+        },
+      ],
+    };
+    let binaryCalls = 0;
+    const runner: CommandRunner = {
+      run: async () => JSON.stringify(unsupported),
+      runToFile: async () => {
+        binaryCalls += 1;
+        throw new Error("not expected");
+      },
+    };
+    await expect(
+      downloadWorkItemAttachment(
+        runner,
+        context,
+        "7",
+        attachmentId,
+        join(tmpdir(), "x"),
+      ),
+    ).rejects.toMatchObject({ code: "AZ_ATTACHMENT_MEDIA_TYPE_UNSUPPORTED" });
+    expect(binaryCalls).toBe(0);
+
+    const secrets = [
+      "token-secret",
+      "access-token-secret",
+      "authorization-secret",
+      "bearer-secret",
+    ];
+    const failingRunner: CommandRunner = {
+      run: async () => JSON.stringify(attachmentItem),
+      runToFile: async () =>
+        Promise.reject({
+          message: "attachment download failed",
+          stderr:
+            `token=${secrets[0]} access_token=${secrets[1]} ` +
+            `authorization=Bearer ${secrets[2]} Bearer ${secrets[3]}`,
+        }),
+    };
+    const error = await downloadWorkItemAttachment(
+      failingRunner,
+      context,
+      "7",
+      attachmentId,
+      join(tmpdir(), "y"),
+    ).then(
+      () => {
+        throw new Error("Expected the attachment download to fail.");
+      },
+      (reason: unknown) => reason as AzdoAxiError,
+    );
+    expect(error).toMatchObject({
+      code: "AZ_ATTACHMENT_DOWNLOAD_FAILED",
+      suggestions: [
+        "Verify attachment access and retry with a writable local destination.",
+      ],
+    });
+    expect(error.message).toContain("token=[redacted]");
+    expect(error.message).toContain("access_token=[redacted]");
+    expect(error.message).toContain("authorization=[redacted]");
+    expect(error.message).toContain("Bearer [redacted]");
+    for (const secret of secrets) {
+      expect(error.message).not.toContain(secret);
+    }
   });
 });

@@ -5,8 +5,11 @@ import { AzdoAxiError } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
 
+export const MAX_ATTACHMENT_DOWNLOAD_SIZE = 64 * 1024 * 1024;
+
 export interface CommandRunner {
   run(args: readonly string[]): Promise<string>;
+  runToFile?(args: readonly string[], path: string): Promise<void>;
 }
 
 export class NodeAzRunner implements CommandRunner {
@@ -18,6 +21,28 @@ export class NodeAzRunner implements CommandRunner {
         windowsHide: true,
       });
       return stdout;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        throw new AzdoAxiError(
+          "Azure CLI is not installed or is not on PATH.",
+          "AZ_CLI_UNAVAILABLE",
+          [
+            "Install Azure CLI: https://learn.microsoft.com/cli/azure/install-azure-cli",
+          ],
+        );
+      }
+      throw error;
+    }
+  }
+
+  async runToFile(args: readonly string[], path: string): Promise<void> {
+    try {
+      await execFileAsync("az", [...args, "--out", path], {
+        encoding: "utf8",
+        maxBuffer: 16 * 1024 * 1024,
+        windowsHide: true,
+      });
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT") {
