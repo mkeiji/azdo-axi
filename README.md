@@ -235,17 +235,3 @@ The update route reads the target first. If all requested values already match, 
 ## Output and errors
 
 Successful routed commands emit concise structured [TOON](https://github.com/toon-format/toon) output. Results include resolved context and scope metadata; list and query results include `count` and `items`, link results include `count` and `links`, evidence listings include the exact work-item ID and `count`, and mutations include the operation, work-item ID, `noOp`, and resulting item. Attachment listings and download results never include attachment bytes or credentials. Empty reads still report a zero count. Errors identify validation, authentication, permission, context, Azure CLI/extension setup, attachment media type, download, or filesystem problems and include a suggested next command when one is available.
-
-## Pull-request review
-
-The repository includes a narrowly scoped `PR Agent` workflow for pull requests that are opened or synchronized. Before relying on it, configure an Actions secret named exactly `OPENROUTER_API_KEY` in the repository settings. The value must be entered through the GitHub Actions secret interface or supplied interactively with `gh secret set OPENROUTER_API_KEY`; it must not be committed to the repository or printed in logs.
-
-Validate the workflow and secret-name/setup contract with:
-
-```sh
-python3 scripts/validate-pr-agent-workflow.py
-```
-
-### Reviewing the action pin
-
-The workflow pins `the-pr-agent/pr-agent` to a full commit SHA. To update it safely, review the upstream release or commit history and the complete diff from the current revision, replace the pin only with the reviewed full SHA, run the focused validation, and submit the change for normal review. Do not replace the SHA with a branch or mutable tag. The configured workflow events and `github_action_config.pr_actions` value must remain `[opened, synchronize]`.
