@@ -1,11 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import {
-  MAX_BUFFERED_ATTACHMENT_SIZE,
+  MAX_ATTACHMENT_DOWNLOAD_SIZE,
   type CommandRunner,
 } from "../src/az.js";
 import { parseInvocation } from "../src/arguments.js";
@@ -1095,7 +1095,7 @@ describe("work-item evidence inspection", () => {
         calls.push([...args]);
         return JSON.stringify(attachmentItem);
       },
-      runBinary: async () => {
+      runToFile: async () => {
         binaryCalls += 1;
         throw new Error(
           "attachment content must not be requested by a listing",
@@ -1165,19 +1165,20 @@ describe("work-item evidence inspection", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("downloads validated binary content to a selected directory without returning bytes", async () => {
+  it("downloads through a binary-safe file target without returning bytes", async () => {
     const directory = mkdtempSync(join(tmpdir(), "azdo-axi-attachment-"));
     try {
       const calls: string[][] = [];
-      const binaryCalls: string[][] = [];
+      const outputCalls: Array<{ args: string[]; path: string }> = [];
+      const attachmentBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
       const runner: CommandRunner = {
         run: async (args) => {
           calls.push([...args]);
           return JSON.stringify(attachmentItem);
         },
-        runBinary: async (args) => {
-          binaryCalls.push([...args]);
-          return Buffer.from([0, 1, 2, 3]);
+        runToFile: async (args, path) => {
+          outputCalls.push({ args: [...args], path });
+          writeFileSync(path, attachmentBytes);
         },
       };
       const result = await downloadWorkItemAttachment(
@@ -1187,27 +1188,29 @@ describe("work-item evidence inspection", () => {
         attachmentId,
         directory,
       );
-      expect(readFileSync(join(directory, "screen.png"))).toEqual(
-        Buffer.from([0, 1, 2, 3]),
-      );
+      const path = join(directory, "screen.png");
+      expect(readFileSync(path)).toEqual(attachmentBytes);
       expect(result).toMatchObject({
         workItemId: "7",
         attachmentId,
-        path: join(directory, "screen.png"),
-        size: 4,
+        path,
+        size: attachmentBytes.length,
         contentType: "image/png",
       });
       expect(result).not.toHaveProperty("content");
+      expect(JSON.stringify(result)).not.toContain(attachmentBytes.toString("hex"));
       expect(calls).toHaveLength(1);
-      expect(binaryCalls).toHaveLength(1);
-      expect(binaryCalls[0]).toEqual(
-        expect.arrayContaining([
-          "devops",
-          "invoke",
-          "--resource",
-          "attachments",
-        ]),
-      );
+      expect(outputCalls).toEqual([
+        {
+          args: expect.arrayContaining([
+            "devops",
+            "invoke",
+            "--resource",
+            "attachments",
+          ]),
+          path,
+        },
+      ]);
     } finally {
       rmSync(directory, { force: true, recursive: true });
     }
@@ -1221,7 +1224,7 @@ describe("work-item evidence inspection", () => {
     );
     const unavailableRunner: CommandRunner = {
       run: async () => JSON.stringify(attachmentItem),
-      runBinary: async () => Promise.reject(unavailable),
+      runToFile: async () => Promise.reject(unavailable),
     };
     await expect(
       downloadWorkItemAttachment(
@@ -1241,16 +1244,15 @@ describe("work-item evidence inspection", () => {
           ...attachmentItem.relations[0],
           attributes: {
             ...attachmentItem.relations[0].attributes,
-            resourceSize: MAX_BUFFERED_ATTACHMENT_SIZE + 1,
+            resourceSize: MAX_ATTACHMENT_DOWNLOAD_SIZE + 1,
           },
         },
       ],
     };
     const oversizedRunner: CommandRunner = {
       run: async () => JSON.stringify(oversized),
-      runBinary: async () => {
+      runToFile: async () => {
         binaryCalls += 1;
-        return Buffer.alloc(0);
       },
     };
     await expect(
@@ -1281,7 +1283,7 @@ describe("work-item evidence inspection", () => {
     let binaryCalls = 0;
     const runner: CommandRunner = {
       run: async () => JSON.stringify(unsupported),
-      runBinary: async () => {
+      runToFile: async () => {
         binaryCalls += 1;
         throw new Error("not expected");
       },
@@ -1305,7 +1307,7 @@ describe("work-item evidence inspection", () => {
     ];
     const failingRunner: CommandRunner = {
       run: async () => JSON.stringify(attachmentItem),
-      runBinary: async () =>
+      runToFile: async () =>
         Promise.reject({
           message: "attachment download failed",
           stderr:

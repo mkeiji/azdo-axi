@@ -5,11 +5,11 @@ import { AzdoAxiError } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
 
-export const MAX_BUFFERED_ATTACHMENT_SIZE = 64 * 1024 * 1024;
+export const MAX_ATTACHMENT_DOWNLOAD_SIZE = 64 * 1024 * 1024;
 
 export interface CommandRunner {
   run(args: readonly string[]): Promise<string>;
-  runBinary?(args: readonly string[]): Promise<Buffer>;
+  runToFile?(args: readonly string[], path: string): Promise<void>;
 }
 
 export class NodeAzRunner implements CommandRunner {
@@ -36,14 +36,13 @@ export class NodeAzRunner implements CommandRunner {
     }
   }
 
-  async runBinary(args: readonly string[]): Promise<Buffer> {
+  async runToFile(args: readonly string[], path: string): Promise<void> {
     try {
-      const { stdout } = await execFileAsync("az", [...args], {
-        encoding: "buffer",
-        maxBuffer: MAX_BUFFERED_ATTACHMENT_SIZE,
+      await execFileAsync("az", [...args, "--out", path], {
+        encoding: "utf8",
+        maxBuffer: 16 * 1024 * 1024,
         windowsHide: true,
       });
-      return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT") {
@@ -55,25 +54,9 @@ export class NodeAzRunner implements CommandRunner {
           ],
         );
       }
-      if (
-        code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
-        /maxbuffer/i.test(String(error))
-      ) {
-        throw bufferedAttachmentSizeError();
-      }
       throw error;
     }
   }
-}
-
-function bufferedAttachmentSizeError(): AzdoAxiError {
-  return new AzdoAxiError(
-    `Attachment exceeds the ${MAX_BUFFERED_ATTACHMENT_SIZE / (1024 * 1024)} MiB download limit.`,
-    "AZ_ATTACHMENT_SIZE_LIMIT",
-    [
-      "Choose a smaller attachment or retrieve the file directly from Azure DevOps.",
-    ],
-  );
 }
 
 export interface AzureDevOpsPreflight {

@@ -1,8 +1,8 @@
-import { stat, writeFile } from "node:fs/promises";
+import { open, stat, unlink } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 
 import {
-  MAX_BUFFERED_ATTACHMENT_SIZE,
+  MAX_ATTACHMENT_DOWNLOAD_SIZE,
   type CommandRunner,
 } from "./az.js";
 import type { AzureDevOpsContext } from "./context.js";
@@ -830,47 +830,41 @@ export async function downloadWorkItemAttachment(
     );
   }
   assertSupportedAttachmentMediaType(attachment.contentType);
-  assertBufferedAttachmentSize(attachment.size);
-  if (!runner.runBinary) {
+  assertAttachmentDownloadSize(attachment.size);
+  if (!runner.runToFile) {
     throw new AzdoAxiError(
-      "Binary attachment download is unavailable for this Azure runner.",
+      "Binary-safe attachment download is unavailable for this Azure runner.",
       "AZ_ATTACHMENT_DOWNLOAD_UNAVAILABLE",
       ["Use the installed azdo-axi CLI to download the attachment."],
     );
   }
-  let binary: Buffer;
-  try {
-    binary = await runner.runBinary(
-      buildAttachmentDownloadArgs(context, attachment.id),
-    );
-  } catch (error) {
-    throw normalizeAttachmentDownloadError(error);
-  }
-  assertBufferedAttachmentSize(binary.length);
   const path = await resolveDownloadPath(
     destination,
     attachment.filename,
     attachment.id,
   );
+  await reserveDownloadPath(path);
   try {
-    await writeFile(path, binary, { flag: "wx" });
-  } catch (error) {
-    throw new AzdoAxiError(
-      `Could not write the attachment to ${path}.`,
-      "AZ_ATTACHMENT_WRITE_FAILED",
-      ["Choose a writable new file path or an existing writable directory."],
+    await runner.runToFile(
+      buildAttachmentDownloadArgs(context, attachment.id),
+      path,
     );
+    const size = (await stat(path)).size;
+    assertAttachmentDownloadSize(size);
+    return {
+      context,
+      organization: context.organization,
+      project: context.project,
+      workItemId,
+      attachmentId: attachment.id,
+      path,
+      size,
+      ...(attachment.contentType ? { contentType: attachment.contentType } : {}),
+    };
+  } catch (error) {
+    await removeReservedDownloadPath(path);
+    throw normalizeAttachmentDownloadError(error);
   }
-  return {
-    context,
-    organization: context.organization,
-    project: context.project,
-    workItemId,
-    attachmentId: attachment.id,
-    path,
-    size: binary.length,
-    ...(attachment.contentType ? { contentType: attachment.contentType } : {}),
-  };
 }
 
 export function buildAttachmentDownloadArgs(
@@ -1357,10 +1351,30 @@ function safeAttachmentFilename(
   return name && name !== "." && name !== ".." ? name : attachmentId;
 }
 
-function assertBufferedAttachmentSize(size: number | undefined): void {
-  if (size === undefined || size <= MAX_BUFFERED_ATTACHMENT_SIZE) return;
+async function reserveDownloadPath(path: string): Promise<void> {
+  try {
+    await (await open(path, "wx")).close();
+  } catch {
+    throw new AzdoAxiError(
+      `Could not write the attachment to ${path}.`,
+      "AZ_ATTACHMENT_WRITE_FAILED",
+      ["Choose a writable new file path or an existing writable directory."],
+    );
+  }
+}
+
+async function removeReservedDownloadPath(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch {
+    // The Azure CLI may not have created a file before reporting its error.
+  }
+}
+
+function assertAttachmentDownloadSize(size: number | undefined): void {
+  if (size === undefined || size <= MAX_ATTACHMENT_DOWNLOAD_SIZE) return;
   throw new AzdoAxiError(
-    `Attachment size ${size} bytes exceeds the ${MAX_BUFFERED_ATTACHMENT_SIZE / (1024 * 1024)} MiB download limit.`,
+    `Attachment size ${size} bytes exceeds the ${MAX_ATTACHMENT_DOWNLOAD_SIZE / (1024 * 1024)} MiB download limit.`,
     "AZ_ATTACHMENT_SIZE_LIMIT",
     [
       "Choose a smaller attachment or retrieve the file directly from Azure DevOps.",
