@@ -38,7 +38,7 @@ export class NodeAzRunner implements CommandRunner {
 
   async runToFile(args: readonly string[], path: string): Promise<void> {
     try {
-      await execFileAsync("az", [...args, "--out", path], {
+      await execFileAsync("az", [...args, "--out-file", path], {
         encoding: "utf8",
         maxBuffer: 16 * 1024 * 1024,
         windowsHide: true,

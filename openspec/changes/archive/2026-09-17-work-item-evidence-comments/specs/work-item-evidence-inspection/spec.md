@@ -1,9 +1,4 @@
-# work-item-evidence-inspection Specification
-
-## Purpose
-Provide safe, read-only access to work-item discussion evidence and attachment files without exposing attachment bytes or Azure credentials in structured output.
-
-## Requirements
+## Modified Requirements
 
 ### Requirement: Inspect bounded work-item discussion comments
 
@@ -34,20 +29,6 @@ The system SHALL request the installed Azure CLI-compatible `7.1-preview` commen
 - **WHEN** a comment contains supported HTTPS image references in its HTML
 - **THEN** listing SHALL return ordinal metadata linked to that comment and SHALL not request image content
 
-### Requirement: List attachment metadata without content retrieval
-
-The system SHALL provide `azdo-axi work-item attachments <id>` to return a bounded list of attachment relations for the resolved organization, project, and work-item ID. Each valid attachment entry SHALL identify a stable attachment ID or normalized URL and include filename, content type, size, and creation details when Azure DevOps supplies them. The command SHALL not fetch, print, return, or persist attachment binary content.
-
-#### Scenario: List attachment evidence
-
-- **WHEN** a work item contains valid attached-file relations
-- **THEN** the system SHALL return only compact attachment metadata and the exact target identity
-
-#### Scenario: Missing or malformed relations
-
-- **WHEN** a work item has no relations or an attached-file relation lacks a usable attachment identifier
-- **THEN** the system SHALL return an empty attachment list or a structured actionable error without downloading content
-
 ### Requirement: Explicit validated attachment download
 
 Relation attachment downloads SHALL use `--out-file` to a unique non-existent temporary path, validate size, media type, magic bytes and content, atomically publish with no clobber, and clean up temporary or partial files on success and failure. Inline-image downloads SHALL be permitted only for a reference freshly listed for the requested work item and revalidated against the current comment. Requests SHALL enforce organization/project binding, supported Azure attachment URL shapes, image media allowlisting, streaming and size limits, and reject data, JavaScript, external, malformed, cross-scope, non-attachment, SVG, and HTML inputs.
@@ -76,12 +57,3 @@ Relation attachment downloads SHALL use `--out-file` to a unique non-existent te
 
 - **WHEN** an inline reference is external, malformed, cross-scope, non-attachment, SVG, HTML, or stale
 - **THEN** the command SHALL reject it before downloading
-
-### Requirement: Read-only evidence request safety
-
-Evidence-inspection commands SHALL validate positive work-item IDs and resolved context before requesting Azure DevOps, use non-interactive Azure CLI requests, and make no work-item mutations. Azure request failures, malformed paginated responses, unsupported attachment media types, and invalid local destinations SHALL use structured actionable errors.
-
-#### Scenario: Unsupported evidence request
-
-- **WHEN** a caller supplies an unsupported flag, invalid ID, invalid continuation request, or unsupported attachment media type
-- **THEN** the system SHALL reject the request locally or return a structured actionable error before exposing content
