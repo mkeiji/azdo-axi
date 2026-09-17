@@ -7,32 +7,27 @@ Provide safe, read-only access to work-item discussion evidence and attachment f
 
 ### Requirement: Inspect bounded work-item discussion comments
 
-The system SHALL request the installed Azure CLI-compatible `7.1-preview` comments API and normalize responses containing `comments`, `count`, `totalCount`, and `continuation_token` (as well as compatible legacy envelopes) into bounded comment output. Pagination SHALL preserve explicit continuation, `--all`, safe page limits, and deduplicate comments. Listing SHALL extract only supported image references from fetched comment HTML as metadata tied to its source comment and ordinal, without downloading image bytes or placing bytes in structured output.
+The system SHALL request the installed Azure CLI-compatible `7.1-preview` comments API, normalize live envelopes containing `comments`, `count`, `totalCount`, and `continuation_token` (plus compatible legacy envelopes), preserve bounded pagination, explicit continuation, `--all`, and comment deduplication, and return bounded comment metadata. Listing SHALL extract only supported HTTPS image references from fetched comment HTML into separate metadata linked to the source comment and ordinal, without downloading or embedding image bytes.
 
 #### Scenario: List a comment page
-
-- **WHEN** a caller invokes `work-item comments <id>` with valid context
-- **THEN** the system SHALL return compact comment metadata, bounded text, the exact target identity, and a continuation token when Azure DevOps supplies one
+- **WHEN** a caller invokes bounded work-item comments with valid context
+- **THEN** normalized compact comments and any continuation token are returned with exact target identity
 
 #### Scenario: Continue or traverse comments
-
-- **WHEN** a caller supplies a continuation token or explicitly requests all comment pages
-- **THEN** the system SHALL request the corresponding Azure DevOps pages and preserve the continuation behavior without duplicating comments
+- **WHEN** a caller supplies continuation or requests all pages
+- **THEN** corresponding bounded pages are requested without duplicate comments
 
 #### Scenario: Empty discussion
-
-- **WHEN** Azure DevOps returns no comments for the requested work item
-- **THEN** the system SHALL return a zero comment count with the exact target identity
+- **WHEN** Azure DevOps returns no comments
+- **THEN** a zero-count result with exact target identity is returned
 
 #### Scenario: Live comments envelope
-
-- **WHEN** Azure DevOps returns `comments`, `count`, `totalCount`, and `continuation_token`
-- **THEN** the command SHALL return normalized comments and continuation metadata without requiring a `value` array
+- **WHEN** the response contains `comments`, `count`, `totalCount`, and `continuation_token`
+- **THEN** comments and continuation metadata are normalized without requiring `value`
 
 #### Scenario: Inline image inventory
-
-- **WHEN** a comment contains supported HTTPS image references in its HTML
-- **THEN** listing SHALL return ordinal metadata linked to that comment and SHALL not request image content
+- **WHEN** fetched comment HTML contains supported HTTPS image references
+- **THEN** ordinal metadata tied to its comment is returned without an image-content request
 
 ### Requirement: List attachment metadata without content retrieval
 
@@ -50,38 +45,32 @@ The system SHALL provide `azdo-axi work-item attachments <id>` to return a bound
 
 ### Requirement: Explicit validated attachment download
 
-Relation attachment downloads SHALL use `--out-file` to a unique non-existent temporary path, validate size, media type, magic bytes and content, atomically publish with no clobber, and clean up temporary or partial files on success and failure. Inline-image downloads SHALL be permitted only for a reference freshly listed for the requested work item and revalidated against the current comment. Requests SHALL enforce organization/project binding, supported Azure attachment URL shapes, image media allowlisting, streaming and size limits, and reject data, JavaScript, external, malformed, cross-scope, non-attachment, SVG, and HTML inputs.
+Relation attachment downloads SHALL use `--out-file` to a unique non-existent temporary path, enforce size and streaming limits, validate allowlisted media and magic bytes/content, atomically publish without clobbering, and clean up temporary or partial files on success or failure. Inline-image downloads SHALL be allowed only for a reference freshly listed for the requested work item and revalidated against the current comment. Requests SHALL enforce organization/project binding and reject data, JavaScript, external, malformed, cross-scope, non-attachment, SVG, and HTML inputs.
 
 #### Scenario: Download a validated attachment
-
-- **WHEN** a caller selects an attachment relation for a valid work item and a writable local destination
-- **THEN** the system SHALL write unchanged supported attachment bytes to that destination through a binary-safe output path and return compact download metadata without binary content
+- **WHEN** a selected relation is valid and destination writable
+- **THEN** supported bytes are staged, validated, and published with compact metadata only
 
 #### Scenario: Reject a foreign attachment URL
-
-- **WHEN** a caller supplies an attachment URL whose organization or project differs from the resolved target
-- **THEN** the system SHALL return a structured validation error and SHALL not make an attachment download request
+- **WHEN** an attachment URL differs in organization or project
+- **THEN** validation fails before download
 
 #### Scenario: Download failure
-
-- **WHEN** Azure DevOps cannot return the selected attachment or the local destination cannot be written
-- **THEN** the system SHALL return a structured actionable error without printing binary data or credentials
+- **WHEN** Azure or local publication fails
+- **THEN** a structured error is returned and staged/partial files are removed
 
 #### Scenario: Atomic validated download
-
 - **WHEN** a listed relation or freshly listed inline image is downloaded
-- **THEN** the CLI SHALL write via a unique temporary `--out-file`, validate content, and publish without clobbering an existing destination
+- **THEN** a unique temporary output is validated and published without clobbering
 
 #### Scenario: Unsafe inline reference
-
 - **WHEN** an inline reference is external, malformed, cross-scope, non-attachment, SVG, HTML, or stale
-- **THEN** the command SHALL reject it before downloading
+- **THEN** it is rejected before downloading
 
 ### Requirement: Read-only evidence request safety
 
-Evidence-inspection commands SHALL validate positive work-item IDs and resolved context before requesting Azure DevOps, use non-interactive Azure CLI requests, and make no work-item mutations. Azure request failures, malformed paginated responses, unsupported attachment media types, and invalid local destinations SHALL use structured actionable errors.
+Evidence inspection SHALL continue to validate IDs and context, use non-interactive Azure CLI requests, avoid mutations, and return structured redacted errors for Azure failures, malformed responses, unsupported media, and invalid destinations.
 
 #### Scenario: Unsupported evidence request
-
-- **WHEN** a caller supplies an unsupported flag, invalid ID, invalid continuation request, or unsupported attachment media type
-- **THEN** the system SHALL reject the request locally or return a structured actionable error before exposing content
+- **WHEN** an invalid ID, unsupported flag, malformed response, media type, or destination is supplied
+- **THEN** the request is rejected safely with actionable structured output
