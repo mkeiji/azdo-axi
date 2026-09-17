@@ -1,9 +1,6 @@
-# work-item-evidence-inspection Specification
+# Change: work-item-evidence-inspection
 
-## Purpose
-Provide safe, read-only access to work-item discussion evidence and attachment files without exposing attachment bytes or Azure credentials in structured output.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Inspect bounded work-item discussion comments
 
@@ -28,20 +25,6 @@ The system SHALL request the installed Azure CLI-compatible `7.1-preview` commen
 #### Scenario: Inline image inventory
 - **WHEN** fetched comment HTML contains supported HTTPS image references
 - **THEN** ordinal metadata tied to its comment is returned without an image-content request
-
-### Requirement: List attachment metadata without content retrieval
-
-The system SHALL provide `azdo-axi work-item attachments <id>` to return a bounded list of attachment relations for the resolved organization, project, and work-item ID. Each valid attachment entry SHALL identify a stable attachment ID or normalized URL and include filename, content type, size, and creation details when Azure DevOps supplies them. The command SHALL not fetch, print, return, or persist attachment binary content.
-
-#### Scenario: List attachment evidence
-
-- **WHEN** a work item contains valid attached-file relations
-- **THEN** the system SHALL return only compact attachment metadata and the exact target identity
-
-#### Scenario: Missing or malformed relations
-
-- **WHEN** a work item has no relations or an attached-file relation lacks a usable attachment identifier
-- **THEN** the system SHALL return an empty attachment list or a structured actionable error without downloading content
 
 ### Requirement: Explicit validated attachment download
 

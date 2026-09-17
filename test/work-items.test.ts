@@ -1208,7 +1208,7 @@ describe("work-item evidence inspection", () => {
             "--resource",
             "attachments",
           ]),
-          path,
+          path: expect.stringContaining(`${path}.azdo-axi-`),
         },
       ]);
     } finally {

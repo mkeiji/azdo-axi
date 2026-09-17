@@ -1,4 +1,4 @@
-import { open, stat, unlink } from "node:fs/promises";
+import { link, open, stat, unlink } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 
 import {
@@ -57,6 +57,8 @@ export interface WorkItemCommentsResult extends Record<string, unknown> {
   workItemId: string;
   count: number;
   comments: Array<Record<string, unknown>>;
+  inlineImages: Array<Record<string, unknown>>;
+  totalCount?: number;
   continuationToken?: string;
 }
 
@@ -683,8 +685,11 @@ export async function listWorkItemComments(
   validateWorkItemId(id);
   const top = options.top ?? DEFAULT_COMMENT_PAGE_SIZE;
   const comments: Array<Record<string, unknown>> = [];
+  const inlineImages: Array<Record<string, unknown>> = [];
   const seen = new Set<string>();
+  const seenImages = new Set<string>();
   let continuationToken = options.continuationToken;
+  let pageTotalCount: number | undefined;
   let pageCount = 0;
 
   do {
@@ -700,12 +705,20 @@ export async function listWorkItemComments(
       buildCommentsArgs(context, id, top, continuationToken),
       `work-item comments ${id}`,
     );
-    const page = commentPage(raw, Boolean(options.full));
+    const page = commentPage(raw, Boolean(options.full), context);
+    pageTotalCount ??= page.totalCount;
     for (const comment of page.comments) {
       const key = String(comment.id);
       if (!seen.has(key)) {
         seen.add(key);
         comments.push(comment);
+      }
+    }
+    for (const image of page.inlineImages) {
+      const key = `${String(image.commentId)}:${String(image.ordinal)}`;
+      if (!seenImages.has(key)) {
+        seenImages.add(key);
+        inlineImages.push(image);
       }
     }
     continuationToken = page.continuationToken;
@@ -718,6 +731,8 @@ export async function listWorkItemComments(
     workItemId: id,
     count: comments.length,
     comments,
+    inlineImages,
+    ...(pageTotalCount !== undefined ? { totalCount: pageTotalCount } : {}),
     ...(!options.all && continuationToken ? { continuationToken } : {}),
   };
 }
@@ -751,7 +766,7 @@ export function buildCommentsArgs(
     "--organization",
     context.organization,
     "--api-version",
-    "7.1-preview.4",
+    "7.1-preview",
     "--output",
     "json",
     "--only-show-errors",
@@ -843,14 +858,16 @@ export async function downloadWorkItemAttachment(
     attachment.filename,
     attachment.id,
   );
-  await reserveDownloadPath(path);
+  const temporaryPath = await createTemporaryDownloadPath(path);
   try {
     await runner.runToFile(
       buildAttachmentDownloadArgs(context, attachment.id),
-      path,
+      temporaryPath,
     );
-    const size = (await stat(path)).size;
+    const size = (await stat(temporaryPath)).size;
     assertAttachmentDownloadSize(size);
+    await validateDownloadedContent(temporaryPath, attachment.contentType);
+    await publishDownloadNoClobber(temporaryPath, path);
     return {
       context,
       organization: context.organization,
@@ -862,7 +879,7 @@ export async function downloadWorkItemAttachment(
       ...(attachment.contentType ? { contentType: attachment.contentType } : {}),
     };
   } catch (error) {
-    await removeReservedDownloadPath(path);
+    await removeReservedDownloadPath(temporaryPath);
     throw normalizeAttachmentDownloadError(error);
   }
 }
@@ -1051,22 +1068,25 @@ export function linkRelations(value: unknown): Array<Record<string, unknown>> {
 function commentPage(
   raw: unknown,
   full: boolean,
-): { comments: Array<Record<string, unknown>>; continuationToken?: string } {
+  context: AzureDevOpsContext,
+): { comments: Array<Record<string, unknown>>; inlineImages: Array<Record<string, unknown>>; totalCount?: number; continuationToken?: string } {
   const page = asRecord(raw);
-  if (!Array.isArray(page.value)) {
+  const values = page.comments ?? page.value;
+  if (!Array.isArray(values)) {
     throw new AzdoAxiError(
-      "Azure DevOps comments response did not contain a value array.",
+      "Azure DevOps comments response did not contain a comments array.",
       "AZ_COMMENTS_INVALID_OUTPUT",
-      [
-        "Retry the bounded comments request or update the Azure DevOps extension.",
-      ],
+      ["Retry the bounded comments request or update the Azure DevOps extension."],
     );
   }
   const continuationToken = stringProperty(
-    page.continuationToken ?? page.continuationtoken,
+    page.continuation_token ?? page.continuationToken ?? page.continuationtoken,
   );
+  const totalCount = numberProperty(page.totalCount ?? page.count);
   return {
-    comments: page.value.map((value) => commentOutput(value, full)),
+    comments: values.map((value) => commentOutput(value, full)),
+    inlineImages: values.flatMap((value) => extractInlineImages(asRecord(value), context)),
+    ...(totalCount !== undefined ? { totalCount } : {}),
     ...(continuationToken ? { continuationToken } : {}),
   };
 }
@@ -1099,6 +1119,29 @@ function commentOutput(value: unknown, full: boolean): Record<string, unknown> {
     addBoundedText(result, "text", comment.text, full);
   }
   return result;
+}
+
+/** Return image references only; listing deliberately never performs a binary request. */
+export function extractInlineImages(
+  comment: Record<string, unknown>,
+  context: AzureDevOpsContext,
+): Array<Record<string, unknown>> {
+  const text = typeof comment.text === "string" ? comment.text : "";
+  const commentId = comment.id;
+  const images: Array<Record<string, unknown>> = [];
+  const re = /<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const reference = match[1];
+    if (!reference || !/^https:\/\//i.test(reference)) continue;
+    try {
+      const parsed = parseAttachmentUrl(reference, context);
+      images.push({ commentId, ordinal: images.length, attachmentId: parsed.id, url: parsed.url });
+    } catch {
+      // Unsafe, external, malformed, and non-attachment references are not an image inventory entry.
+    }
+  }
+  return images;
 }
 
 interface AttachmentRelation {
@@ -1307,7 +1350,9 @@ function assertSupportedAttachmentMediaType(
   if (
     /^(?:text\/html|application\/(?:xhtml\+xml|javascript|ecmascript)|image\/svg\+xml)$/i.test(
       contentType,
-    )
+    ) ||
+    (contentType.toLowerCase().startsWith("image/") &&
+      !/^(?:image\/(?:png|jpeg|gif|webp))$/i.test(contentType))
   ) {
     throw new AzdoAxiError(
       `Attachment media type ${contentType} is not supported for download.`,
@@ -1351,16 +1396,59 @@ function safeAttachmentFilename(
   return name && name !== "." && name !== ".." ? name : attachmentId;
 }
 
-async function reserveDownloadPath(path: string): Promise<void> {
+async function createTemporaryDownloadPath(path: string): Promise<string> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const temporary = `${path}.azdo-axi-${process.pid}-${Date.now()}-${attempt}.tmp`;
+    try {
+      await (await open(temporary, "wx")).close();
+      return temporary;
+    } catch {
+      // Retry with a different name; never overwrite a pre-existing file.
+    }
+  }
+  throw new AzdoAxiError(`Could not stage the attachment for ${path}.`, "AZ_ATTACHMENT_WRITE_FAILED", [
+    "Choose a writable new file path or an existing writable directory.",
+  ]);
+}
+
+async function publishDownloadNoClobber(temporary: string, destination: string): Promise<void> {
   try {
-    await (await open(path, "wx")).close();
+    await link(temporary, destination);
+    await unlink(temporary);
   } catch {
     throw new AzdoAxiError(
-      `Could not write the attachment to ${path}.`,
+      `Could not write the attachment to ${destination}.`,
       "AZ_ATTACHMENT_WRITE_FAILED",
       ["Choose a writable new file path or an existing writable directory."],
     );
   }
+}
+
+async function validateDownloadedContent(path: string, contentType?: string): Promise<void> {
+  const handle = await open(path, "r");
+  try {
+    const header = Buffer.alloc(16);
+    const { bytesRead } = await handle.read(header, 0, header.length, 0);
+    const bytes = header.subarray(0, bytesRead);
+    const text = bytes.toString("utf8").trimStart().toLowerCase();
+    if (text.startsWith("<html") || text.startsWith("<!doctype html") || text.startsWith("<script")) {
+      throw new AzdoAxiError("Attachment content is HTML and is not supported.", "AZ_ATTACHMENT_CONTENT_INVALID", ["Select a binary attachment."]);
+    }
+    const type = contentType?.toLowerCase();
+    const validMagic = type === "image/png"
+      ? bytes.subarray(0, 4).equals(Buffer.from([137, 80, 78, 71]))
+      : type === "image/jpeg"
+        ? bytes.subarray(0, 3).equals(Buffer.from([255, 216, 255]))
+        : type === "image/gif"
+          ? /^(GIF87a|GIF89a)$/.test(bytes.subarray(0, 6).toString("ascii"))
+          : type === "image/webp"
+            ? bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP"
+            : true;
+    if (type?.startsWith("image/") && !validMagic) {
+      throw new AzdoAxiError("Attachment content does not match its declared image type.", "AZ_ATTACHMENT_CONTENT_INVALID", ["Select a valid image attachment."]);
+    }
+    if (contentType?.toLowerCase() === "image/svg+xml") assertSupportedAttachmentMediaType(contentType);
+  } finally { await handle.close(); }
 }
 
 async function removeReservedDownloadPath(path: string): Promise<void> {
