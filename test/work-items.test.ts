@@ -4,10 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import {
-  MAX_ATTACHMENT_DOWNLOAD_SIZE,
-  type CommandRunner,
-} from "../src/az.js";
+import { MAX_ATTACHMENT_DOWNLOAD_SIZE, type CommandRunner } from "../src/az.js";
 import { parseInvocation } from "../src/arguments.js";
 import { AzdoAxiError } from "../src/errors.js";
 import {
@@ -20,6 +17,7 @@ import {
   createWorkItem,
   detailItem,
   downloadWorkItemAttachment,
+  extractInlineAttachments,
   linkRelations,
   linkWorkItem,
   listWorkItemAttachments,
@@ -1087,6 +1085,36 @@ describe("work-item evidence inspection", () => {
     ).rejects.toMatchObject({ code: "AZ_COMMENTS_INVALID_OUTPUT" });
   });
 
+  it("inventories inline document references with source-bound selectors and project GUID URLs", () => {
+    const guid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const result = extractInlineAttachments(
+      {
+        id: 17,
+        text: `<img src="https://dev.azure.com/example/${guid}/_apis/wit/attachments/${attachmentId}?fileName=image.png&sig=secret"><a href="https://dev.azure.com/example/${guid}/_apis/wit/attachments/22222222-2222-3333-4444-555555555555?fileName=notes.md">notes</a>`,
+      },
+      context,
+    );
+    expect(result).toEqual([
+      expect.objectContaining({
+        source: "comment",
+        commentId: 17,
+        ordinal: 0,
+        attachmentId,
+        filename: "image.png",
+        selector: `comment:17:0:${attachmentId}`,
+      }),
+      expect.objectContaining({
+        source: "comment",
+        commentId: 17,
+        ordinal: 1,
+        filename: "notes.md",
+        kind: "markdown",
+        selector: "comment:17:1:22222222-2222-3333-4444-555555555555",
+      }),
+    ]);
+    expect(JSON.stringify(result)).not.toContain("secret");
+  });
+
   it("lists attachment metadata without requesting binary content", async () => {
     const calls: string[][] = [];
     let binaryCalls = 0;
@@ -1143,13 +1171,13 @@ describe("work-item evidence inspection", () => {
     ).rejects.toMatchObject({ code: "AZ_ATTACHMENT_RELATION_INVALID" });
   });
 
-  it("normalizes attachment URLs and rejects a foreign organization before download", async () => {
+  it("builds trusted attachment transport and rejects arbitrary URLs before download", async () => {
     expect(buildAttachmentDownloadArgs(context, attachmentId)).toEqual(
       expect.arrayContaining([
+        "rest",
         "--resource",
-        "attachments",
-        `project=${context.project}`,
-        `attachmentId=${attachmentId}`,
+        "https://app.vssps.visualstudio.com",
+        `https://app.vssps.visualstudio.com/_apis/wit/attachments/${attachmentId}?api-version=7.1`,
       ]),
     );
     const calls: string[][] = [];
@@ -1161,8 +1189,34 @@ describe("work-item evidence inspection", () => {
         `https://dev.azure.com/other/project/_apis/wit/attachments/${attachmentId}`,
         join(tmpdir(), "not-written.png"),
       ),
-    ).rejects.toMatchObject({ code: "AZ_ATTACHMENT_URL_SCOPE_MISMATCH" });
+    ).rejects.toMatchObject({ code: "AZ_ATTACHMENT_SELECTOR_INVALID" });
     expect(calls).toHaveLength(0);
+  });
+
+  it("revalidates a listed comment selector before binary download", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "azdo-axi-comment-"));
+    try {
+      const selector = `comment:17:0:${attachmentId}`;
+      let binaryCalls = 0;
+      let reads = 0;
+      const runner: CommandRunner = {
+        run: async () =>
+          JSON.stringify(
+            reads++ === 0 ? { id: 7, relations: [] } : { value: [] },
+          ),
+        runToFile: async (_args, path) => {
+          binaryCalls += 1;
+          writeFileSync(path, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+        },
+      };
+      // A removed comment reference cannot be selected even if its ID is well-formed.
+      await expect(
+        downloadWorkItemAttachment(runner, context, "7", selector, directory),
+      ).rejects.toMatchObject({ code: "AZ_ATTACHMENT_NOT_FOUND" });
+      expect(binaryCalls).toBe(0);
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it("downloads through a binary-safe file target without returning bytes", async () => {
@@ -1198,15 +1252,16 @@ describe("work-item evidence inspection", () => {
         contentType: "image/png",
       });
       expect(result).not.toHaveProperty("content");
-      expect(JSON.stringify(result)).not.toContain(attachmentBytes.toString("hex"));
+      expect(JSON.stringify(result)).not.toContain(
+        attachmentBytes.toString("hex"),
+      );
       expect(calls).toHaveLength(1);
       expect(outputCalls).toEqual([
         {
           args: expect.arrayContaining([
-            "devops",
-            "invoke",
+            "rest",
             "--resource",
-            "attachments",
+            "https://app.vssps.visualstudio.com",
           ]),
           path: expect.stringContaining(`${path}.azdo-axi-`),
         },

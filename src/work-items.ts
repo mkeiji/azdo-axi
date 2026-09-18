@@ -1,10 +1,7 @@
-import { link, open, stat, unlink } from "node:fs/promises";
+import { link, open, readFile, stat, unlink } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 
-import {
-  MAX_ATTACHMENT_DOWNLOAD_SIZE,
-  type CommandRunner,
-} from "./az.js";
+import { MAX_ATTACHMENT_DOWNLOAD_SIZE, type CommandRunner } from "./az.js";
 import type { AzureDevOpsContext } from "./context.js";
 import { isValidFieldReferenceName } from "./field-validation.js";
 import { AzdoAxiError } from "./errors.js";
@@ -57,7 +54,9 @@ export interface WorkItemCommentsResult extends Record<string, unknown> {
   workItemId: string;
   count: number;
   comments: Array<Record<string, unknown>>;
+  /** @deprecated Use inlineAttachments; retained for image-only callers. */
   inlineImages: Array<Record<string, unknown>>;
+  inlineAttachments: Array<Record<string, unknown>>;
   totalCount?: number;
   continuationToken?: string;
 }
@@ -685,9 +684,9 @@ export async function listWorkItemComments(
   validateWorkItemId(id);
   const top = options.top ?? DEFAULT_COMMENT_PAGE_SIZE;
   const comments: Array<Record<string, unknown>> = [];
-  const inlineImages: Array<Record<string, unknown>> = [];
+  const inlineAttachments: Array<Record<string, unknown>> = [];
   const seen = new Set<string>();
-  const seenImages = new Set<string>();
+  const seenAttachments = new Set<string>();
   let continuationToken = options.continuationToken;
   let pageTotalCount: number | undefined;
   let pageCount = 0;
@@ -714,11 +713,11 @@ export async function listWorkItemComments(
         comments.push(comment);
       }
     }
-    for (const image of page.inlineImages) {
-      const key = `${String(image.commentId)}:${String(image.ordinal)}`;
-      if (!seenImages.has(key)) {
-        seenImages.add(key);
-        inlineImages.push(image);
+    for (const attachment of page.inlineAttachments) {
+      const key = `${String(attachment.commentId)}:${String(attachment.ordinal)}`;
+      if (!seenAttachments.has(key)) {
+        seenAttachments.add(key);
+        inlineAttachments.push(attachment);
       }
     }
     continuationToken = page.continuationToken;
@@ -731,7 +730,10 @@ export async function listWorkItemComments(
     workItemId: id,
     count: comments.length,
     comments,
-    inlineImages,
+    inlineAttachments,
+    inlineImages: inlineAttachments.filter(
+      (attachment) => attachment.kind === "image",
+    ),
     ...(pageTotalCount !== undefined ? { totalCount: pageTotalCount } : {}),
     ...(!options.all && continuationToken ? { continuationToken } : {}),
   };
@@ -795,7 +797,11 @@ export async function listWorkItemAttachments(
     false,
   );
   const available = attachmentRelations(item.relations, context);
-  const attachments = available.slice(0, limit).map(attachmentOutput);
+  const attachments = available
+    .slice(0, limit)
+    .map((attachment, ordinal) =>
+      attachmentOutput(attachment, "relation", ordinal),
+    );
   return {
     context,
     organization: context.organization,
@@ -832,19 +838,36 @@ export async function downloadWorkItemAttachment(
     `work-item attachment download ${workItemId}`,
     false,
   );
-  const attachment = attachmentRelations(item.relations, context).find(
-    (relation) => relation.id === selected.id,
-  );
+  let attachment: AttachmentRelation | undefined;
+  if (selected.source === "comment") {
+    attachment = await revalidatedCommentAttachment(
+      runner,
+      context,
+      workItemId,
+      selected,
+    );
+  } else {
+    const relations = attachmentRelations(item.relations, context);
+    attachment =
+      selected.ordinal === undefined
+        ? relations.find((relation) => relation.id === selected.id)
+        : relations[selected.ordinal]?.id === selected.id
+          ? relations[selected.ordinal]
+          : undefined;
+  }
   if (!attachment) {
     throw new AzdoAxiError(
-      `Attachment ${selected.id} is not related to work item ${workItemId}.`,
+      `Attachment ${selected.id} is not available from the requested work item.`,
       "AZ_ATTACHMENT_NOT_FOUND",
       [
-        "Run `azdo-axi work-item attachments <work-item-id>` to select a listed attachment.",
+        "Run `azdo-axi work-item attachments <work-item-id>` or `comments <work-item-id>` and select a fresh selector.",
       ],
     );
   }
-  assertSupportedAttachmentMediaType(attachment.contentType);
+  assertSupportedAttachmentMediaType(
+    attachment.contentType,
+    attachment.filename,
+  );
   assertAttachmentDownloadSize(attachment.size);
   if (!runner.runToFile) {
     throw new AzdoAxiError(
@@ -866,7 +889,11 @@ export async function downloadWorkItemAttachment(
     );
     const size = (await stat(temporaryPath)).size;
     assertAttachmentDownloadSize(size);
-    await validateDownloadedContent(temporaryPath, attachment.contentType);
+    await validateDownloadedContent(
+      temporaryPath,
+      attachment.contentType,
+      attachment.filename,
+    );
     await publishDownloadNoClobber(temporaryPath, path);
     return {
       context,
@@ -876,7 +903,9 @@ export async function downloadWorkItemAttachment(
       attachmentId: attachment.id,
       path,
       size,
-      ...(attachment.contentType ? { contentType: attachment.contentType } : {}),
+      ...(attachment.contentType
+        ? { contentType: attachment.contentType }
+        : {}),
     };
   } catch (error) {
     await removeReservedDownloadPath(temporaryPath);
@@ -892,19 +921,13 @@ export function buildAttachmentDownloadArgs(
     throw new AzdoAxiError("Attachment ID is not valid.", "VALIDATION_ERROR");
   }
   return [
-    "devops",
-    "invoke",
-    "--area",
-    "wit",
+    "rest",
+    "--method",
+    "get",
+    "--url",
+    `https://app.vssps.visualstudio.com/_apis/wit/attachments/${attachmentId}?api-version=7.1`,
     "--resource",
-    "attachments",
-    "--route-parameters",
-    `project=${context.project}`,
-    `attachmentId=${attachmentId}`,
-    "--organization",
-    context.organization,
-    "--api-version",
-    "7.1",
+    "https://app.vssps.visualstudio.com",
     "--only-show-errors",
   ];
 }
@@ -1069,14 +1092,21 @@ function commentPage(
   raw: unknown,
   full: boolean,
   context: AzureDevOpsContext,
-): { comments: Array<Record<string, unknown>>; inlineImages: Array<Record<string, unknown>>; totalCount?: number; continuationToken?: string } {
+): {
+  comments: Array<Record<string, unknown>>;
+  inlineAttachments: Array<Record<string, unknown>>;
+  totalCount?: number;
+  continuationToken?: string;
+} {
   const page = asRecord(raw);
   const values = page.comments ?? page.value;
   if (!Array.isArray(values)) {
     throw new AzdoAxiError(
       "Azure DevOps comments response did not contain a comments array.",
       "AZ_COMMENTS_INVALID_OUTPUT",
-      ["Retry the bounded comments request or update the Azure DevOps extension."],
+      [
+        "Retry the bounded comments request or update the Azure DevOps extension.",
+      ],
     );
   }
   const continuationToken = stringProperty(
@@ -1085,7 +1115,9 @@ function commentPage(
   const totalCount = numberProperty(page.totalCount ?? page.count);
   return {
     comments: values.map((value) => commentOutput(value, full)),
-    inlineImages: values.flatMap((value) => extractInlineImages(asRecord(value), context)),
+    inlineAttachments: values.flatMap((value) =>
+      extractInlineAttachments(asRecord(value), context),
+    ),
     ...(totalCount !== undefined ? { totalCount } : {}),
     ...(continuationToken ? { continuationToken } : {}),
   };
@@ -1121,27 +1153,51 @@ function commentOutput(value: unknown, full: boolean): Record<string, unknown> {
   return result;
 }
 
-/** Return image references only; listing deliberately never performs a binary request. */
-export function extractInlineImages(
+/** Inventory only supported Azure DevOps HTML references; never request bytes. */
+export function extractInlineAttachments(
   comment: Record<string, unknown>,
   context: AzureDevOpsContext,
 ): Array<Record<string, unknown>> {
   const text = typeof comment.text === "string" ? comment.text : "";
   const commentId = comment.id;
-  const images: Array<Record<string, unknown>> = [];
-  const re = /<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
+  const attachments: Array<Record<string, unknown>> = [];
+  const re = /<(img|a)\b[^>]*?\b(?:src|href)\s*=\s*["']([^"']+)["'][^>]*>/gi;
   let match: RegExpExecArray | null;
   while ((match = re.exec(text)) !== null) {
-    const reference = match[1];
-    if (!reference || !/^https:\/\//i.test(reference)) continue;
     try {
-      const parsed = parseAttachmentUrl(reference, context);
-      images.push({ commentId, ordinal: images.length, attachmentId: parsed.id, url: parsed.url });
+      const parsed = parseAttachmentUrl(match[2] ?? "", context);
+      const filename = parsed.filename;
+      const kind =
+        match[1]?.toLowerCase() === "img" ? "image" : attachmentKind(filename);
+      if (!kind) continue;
+      const ordinal = attachments.length;
+      attachments.push(
+        compact({
+          source: "comment",
+          commentId,
+          ordinal,
+          selector: `comment:${commentId}:${ordinal}:${parsed.id}`,
+          attachmentId: parsed.id,
+          url: parsed.url,
+          filename,
+          kind,
+        }),
+      );
     } catch {
-      // Unsafe, external, malformed, and non-attachment references are not an image inventory entry.
+      // Ignore unsafe, external, malformed, and unsupported HTML references.
     }
   }
-  return images;
+  return attachments;
+}
+
+/** @deprecated Use extractInlineAttachments. */
+export function extractInlineImages(
+  comment: Record<string, unknown>,
+  context: AzureDevOpsContext,
+): Array<Record<string, unknown>> {
+  return extractInlineAttachments(comment, context).filter(
+    (attachment) => attachment.kind === "image",
+  );
 }
 
 interface AttachmentRelation {
@@ -1184,8 +1240,13 @@ function attachmentRelation(
   return {
     id: parsed.id,
     url: parsed.url,
-    ...(stringProperty(attributes.name ?? attributes.fileName)
-      ? { filename: stringProperty(attributes.name ?? attributes.fileName) }
+    ...((stringProperty(attributes.name ?? attributes.fileName) ??
+    parsed.filename)
+      ? {
+          filename:
+            stringProperty(attributes.name ?? attributes.fileName) ??
+            parsed.filename,
+        }
       : {}),
     ...(stringProperty(attributes.contentType)
       ? { contentType: stringProperty(attributes.contentType) }
@@ -1214,8 +1275,13 @@ function attachmentRelation(
 
 function attachmentOutput(
   attachment: AttachmentRelation,
+  source = "relation",
+  ordinal = 0,
 ): Record<string, unknown> {
   return compact({
+    source,
+    ordinal,
+    selector: `relation:${ordinal}:${attachment.id}`,
     id: attachment.id,
     url: attachment.url,
     filename: attachment.filename,
@@ -1226,18 +1292,99 @@ function attachmentOutput(
   });
 }
 
+type AttachmentSelector = {
+  id: string;
+  source: "relation" | "comment";
+  ordinal?: number;
+  commentId?: string;
+};
+
+async function revalidatedCommentAttachment(
+  runner: CommandRunner,
+  context: AzureDevOpsContext,
+  workItemId: string,
+  selected: AttachmentSelector,
+): Promise<AttachmentRelation | undefined> {
+  let token: string | undefined;
+  let pages = 0;
+  do {
+    if (pages++ >= MAX_COMMENT_PAGES)
+      throw new AzdoAxiError(
+        "Azure DevOps comment pagination exceeded the safe page limit.",
+        "AZ_COMMENTS_PAGINATION_LIMIT",
+      );
+    const raw = asRecord(
+      await runAzureJson(
+        runner,
+        buildCommentsArgs(
+          context,
+          workItemId,
+          DEFAULT_COMMENT_PAGE_SIZE,
+          token,
+        ),
+        `work-item attachment comment revalidation ${workItemId}`,
+      ),
+    );
+    const values = raw.comments ?? raw.value;
+    if (!Array.isArray(values))
+      throw new AzdoAxiError(
+        "Azure DevOps comments response did not contain a comments array.",
+        "AZ_COMMENTS_INVALID_OUTPUT",
+      );
+    const rawComment = values.find(
+      (value) => String(asRecord(value).id) === selected.commentId,
+    );
+    if (rawComment) {
+      const reference = extractInlineAttachments(asRecord(rawComment), context)[
+        selected.ordinal ?? -1
+      ];
+      if (reference && reference.attachmentId === selected.id)
+        return {
+          id: selected.id,
+          url: String(reference.url),
+          filename: stringProperty(reference.filename),
+        };
+      return undefined;
+    }
+    token = stringProperty(
+      raw.continuation_token ?? raw.continuationToken ?? raw.continuationtoken,
+    );
+  } while (token);
+  return undefined;
+}
+
 function parseAttachmentSelector(
   selector: string,
   context: AzureDevOpsContext,
-): { id: string } {
-  if (isAttachmentId(selector)) return { id: selector.toLowerCase() };
-  return parseAttachmentUrl(selector, context);
+): AttachmentSelector {
+  const relation = /^relation:(\d+):([0-9a-f-]{36})$/i.exec(selector);
+  if (relation && isAttachmentId(relation[2]))
+    return {
+      source: "relation",
+      ordinal: Number(relation[1]),
+      id: relation[2].toLowerCase(),
+    };
+  const comment = /^comment:([^:]+):(\d+):([0-9a-f-]{36})$/i.exec(selector);
+  if (comment && isAttachmentId(comment[3]))
+    return {
+      source: "comment",
+      commentId: comment[1],
+      ordinal: Number(comment[2]),
+      id: comment[3].toLowerCase(),
+    };
+  if (isAttachmentId(selector))
+    return { source: "relation", id: selector.toLowerCase() };
+  throw new AzdoAxiError(
+    "Attachment downloads require a fresh selector returned by an attachment listing.",
+    "AZ_ATTACHMENT_SELECTOR_INVALID",
+    ["List work-item attachments or comments and use its selector."],
+  );
 }
 
 function parseAttachmentUrl(
   value: string,
   context: AzureDevOpsContext,
-): { id: string; url: string } {
+): { id: string; url: string; filename?: string } {
   let url: URL;
   try {
     url = new URL(value);
@@ -1265,7 +1412,17 @@ function parseAttachmentUrl(
       ["Select an attachment URL returned by `work-item attachments`."],
     );
   }
-  return { id: id.toLowerCase(), url: `${url.origin}${url.pathname}` };
+  const filename = safeAttachmentFilename(
+    url.searchParams.get("fileName") ??
+      url.searchParams.get("filename") ??
+      undefined,
+    "",
+  );
+  return {
+    id: id.toLowerCase(),
+    url: `${url.origin}${url.pathname}`,
+    ...(filename ? { filename } : {}),
+  };
 }
 
 function assertAttachmentUrlScope(url: URL, context: AzureDevOpsContext): void {
@@ -1292,7 +1449,8 @@ function assertAttachmentUrlScope(url: URL, context: AzureDevOpsContext): void {
     if (
       projectSegment &&
       projectSegment !== "_apis" &&
-      !sameAzureSegment(projectSegment, context.project)
+      !sameAzureSegment(projectSegment, context.project) &&
+      !isProjectGuid(projectSegment)
     ) {
       throw attachmentScopeMismatch();
     }
@@ -1311,10 +1469,20 @@ function assertAttachmentUrlScope(url: URL, context: AzureDevOpsContext): void {
   if (
     projectSegment &&
     projectSegment !== "_apis" &&
-    !sameAzureSegment(projectSegment, context.project)
+    !sameAzureSegment(projectSegment, context.project) &&
+    !isProjectGuid(projectSegment)
   ) {
     throw attachmentScopeMismatch();
   }
+}
+
+function isProjectGuid(value: string | undefined): boolean {
+  return Boolean(
+    value &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      value,
+    ),
+  );
 }
 
 function sameAzureSegment(
@@ -1343,19 +1511,61 @@ function isAttachmentId(value: string): boolean {
   );
 }
 
+function attachmentKind(filename: string | undefined): string | undefined {
+  const extension = filename?.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  return (
+    extension &&
+    (
+      {
+        png: "image",
+        jpg: "image",
+        jpeg: "image",
+        gif: "image",
+        webp: "image",
+        pdf: "pdf",
+        doc: "doc",
+        docx: "docx",
+        md: "markdown",
+        markdown: "markdown",
+        txt: "text",
+      } as Record<string, string>
+    )[extension]
+  );
+}
+
 function assertSupportedAttachmentMediaType(
   contentType: string | undefined,
+  filename?: string,
 ): void {
-  if (!contentType) return;
+  const type = contentType?.toLowerCase();
+  const kind = attachmentKind(filename);
+  const allowedTypes =
+    /^(?:image\/(?:png|jpeg|gif|webp)|application\/pdf|application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document|application\/msword|text\/(?:plain|markdown|x-markdown))$/i;
+  const compatible =
+    !type ||
+    !kind ||
+    (kind === "image"
+      ? type.startsWith("image/")
+      : kind === "pdf"
+        ? type === "application/pdf"
+        : kind === "doc"
+          ? type === "application/msword"
+          : kind === "docx"
+            ? type ===
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            : kind === "markdown"
+              ? /^(?:text\/markdown|text\/x-markdown)$/.test(type)
+              : kind === "text"
+                ? type === "text/plain"
+                : false);
   if (
-    /^(?:text\/html|application\/(?:xhtml\+xml|javascript|ecmascript)|image\/svg\+xml)$/i.test(
-      contentType,
-    ) ||
-    (contentType.toLowerCase().startsWith("image/") &&
-      !/^(?:image\/(?:png|jpeg|gif|webp))$/i.test(contentType))
+    (type && !allowedTypes.test(type)) ||
+    (!type && !kind) ||
+    (kind === undefined && type !== undefined) ||
+    !compatible
   ) {
     throw new AzdoAxiError(
-      `Attachment media type ${contentType} is not supported for download.`,
+      `Attachment media type ${contentType ?? "unknown"} is not supported for download.`,
       "AZ_ATTACHMENT_MEDIA_TYPE_UNSUPPORTED",
       [
         "Download a non-renderable file type or inspect the attachment in Azure DevOps.",
@@ -1406,12 +1616,17 @@ async function createTemporaryDownloadPath(path: string): Promise<string> {
       // Retry with a different name; never overwrite a pre-existing file.
     }
   }
-  throw new AzdoAxiError(`Could not stage the attachment for ${path}.`, "AZ_ATTACHMENT_WRITE_FAILED", [
-    "Choose a writable new file path or an existing writable directory.",
-  ]);
+  throw new AzdoAxiError(
+    `Could not stage the attachment for ${path}.`,
+    "AZ_ATTACHMENT_WRITE_FAILED",
+    ["Choose a writable new file path or an existing writable directory."],
+  );
 }
 
-async function publishDownloadNoClobber(temporary: string, destination: string): Promise<void> {
+async function publishDownloadNoClobber(
+  temporary: string,
+  destination: string,
+): Promise<void> {
   try {
     await link(temporary, destination);
     await unlink(temporary);
@@ -1424,31 +1639,68 @@ async function publishDownloadNoClobber(temporary: string, destination: string):
   }
 }
 
-async function validateDownloadedContent(path: string, contentType?: string): Promise<void> {
-  const handle = await open(path, "r");
-  try {
-    const header = Buffer.alloc(16);
-    const { bytesRead } = await handle.read(header, 0, header.length, 0);
-    const bytes = header.subarray(0, bytesRead);
-    const text = bytes.toString("utf8").trimStart().toLowerCase();
-    if (text.startsWith("<html") || text.startsWith("<!doctype html") || text.startsWith("<script")) {
-      throw new AzdoAxiError("Attachment content is HTML and is not supported.", "AZ_ATTACHMENT_CONTENT_INVALID", ["Select a binary attachment."]);
-    }
-    const type = contentType?.toLowerCase();
-    const validMagic = type === "image/png"
-      ? bytes.subarray(0, 4).equals(Buffer.from([137, 80, 78, 71]))
-      : type === "image/jpeg"
-        ? bytes.subarray(0, 3).equals(Buffer.from([255, 216, 255]))
-        : type === "image/gif"
-          ? /^(GIF87a|GIF89a)$/.test(bytes.subarray(0, 6).toString("ascii"))
-          : type === "image/webp"
-            ? bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP"
-            : true;
-    if (type?.startsWith("image/") && !validMagic) {
-      throw new AzdoAxiError("Attachment content does not match its declared image type.", "AZ_ATTACHMENT_CONTENT_INVALID", ["Select a valid image attachment."]);
-    }
-    if (contentType?.toLowerCase() === "image/svg+xml") assertSupportedAttachmentMediaType(contentType);
-  } finally { await handle.close(); }
+async function validateDownloadedContent(
+  path: string,
+  contentType?: string,
+  filename?: string,
+): Promise<void> {
+  assertSupportedAttachmentMediaType(contentType, filename);
+  const bytes = await readFile(path);
+  const header = bytes.subarray(0, 32);
+  const text = bytes.toString("utf8").trimStart().toLowerCase();
+  const type = contentType?.toLowerCase();
+  const kind =
+    attachmentKind(filename) ??
+    (type?.startsWith("image/")
+      ? "image"
+      : type === "application/pdf"
+        ? "pdf"
+        : undefined);
+  const invalid =
+    text.startsWith("<html") ||
+    text.startsWith("<!doctype html") ||
+    text.startsWith("<script") ||
+    text.startsWith("<svg") ||
+    /\u0000/.test(text.slice(0, 4096));
+  const valid =
+    kind === "image"
+      ? type === "image/png"
+        ? header.subarray(0, 4).equals(Buffer.from([137, 80, 78, 71]))
+        : type === "image/jpeg"
+          ? header.subarray(0, 3).equals(Buffer.from([255, 216, 255]))
+          : type === "image/gif"
+            ? /^(GIF87a|GIF89a)$/.test(header.subarray(0, 6).toString("ascii"))
+            : type === "image/webp"
+              ? header.subarray(0, 4).toString("ascii") === "RIFF" &&
+                header.subarray(8, 12).toString("ascii") === "WEBP"
+              : header.subarray(0, 4).equals(Buffer.from([137, 80, 78, 71])) ||
+                header.subarray(0, 3).equals(Buffer.from([255, 216, 255])) ||
+                /^(GIF87a|GIF89a)$/.test(
+                  header.subarray(0, 6).toString("ascii"),
+                ) ||
+                (header.subarray(0, 4).toString("ascii") === "RIFF" &&
+                  header.subarray(8, 12).toString("ascii") === "WEBP")
+      : kind === "pdf"
+        ? header.subarray(0, 5).toString("ascii") === "%PDF-"
+        : kind === "doc"
+          ? header
+              .subarray(0, 8)
+              .equals(
+                Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]),
+              )
+          : kind === "docx"
+            ? header.subarray(0, 4).toString("ascii") === "PK\x03\x04" &&
+              bytes.includes(Buffer.from("[Content_Types].xml")) &&
+              bytes.includes(Buffer.from("word/"))
+            : kind === "markdown" || kind === "text"
+              ? !invalid
+              : false;
+  if (invalid || !valid)
+    throw new AzdoAxiError(
+      "Attachment content does not match its declared safe type.",
+      "AZ_ATTACHMENT_CONTENT_INVALID",
+      ["Select a valid non-renderable attachment."],
+    );
 }
 
 async function removeReservedDownloadPath(path: string): Promise<void> {
