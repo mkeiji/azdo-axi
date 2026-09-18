@@ -31,7 +31,7 @@ commands:
   work-item links <id>            Inspect work-item links
   work-item comments <id>         List bounded discussion comments
   work-item attachments <id>      List attachment metadata only
-  work-item attachment download <work-item-id> <attachment-id-or-url> --path <destination>
+  work-item attachment download <work-item-id> <listed-selector> --path <destination>
                                   Download one validated attachment to disk
   query --wiql <query>            Prepare a WIQL query
 context flags: --organization <org> --project <project> [--team <team>] [--iteration <iteration>]

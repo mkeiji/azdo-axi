@@ -130,7 +130,7 @@ azdo-axi work-item update <id> [context options] [mutation options]
 azdo-axi work-item links <id> [context options]
 azdo-axi work-item comments <id> [context options] [--top <1-200>] [--continuation-token <token>] [--all] [--full]
 azdo-axi work-item attachments <id> [context options] [--limit <1-200>]
-azdo-axi work-item attachment download <work-item-id> <attachment-id-or-url> [context options] --path <destination>
+azdo-axi work-item attachment download <work-item-id> <listed-selector> [context options] --path <destination>
 azdo-axi query [context options] --wiql <query>
 ```
 
@@ -171,18 +171,20 @@ azdo-axi work-item comments 123 --continuation-token '<token from prior output>'
 azdo-axi work-item comments 123 --all --full
 ```
 
-`attachments` lists metadata only. It does not retrieve file bytes. Its output includes the attachment ID or normalized URL, filename, media type, size, and available creation details:
+Comments also expose supported Azure DevOps attachment references in `inlineAttachments`. Select the returned source-bound `selector` to download an inline image or document; do not use HTML URLs directly. Inventory is read-only and never retrieves attachment bytes.
+
+`attachments` lists metadata only. It does not retrieve file bytes. Its output includes a fresh `selector`, source/ordinal, attachment ID or normalized URL, filename, media type, size, and available creation details:
 
 ```sh
 azdo-axi work-item attachments 123 --limit 100
 ```
 
-Download is explicit and verifies that the selected attachment is related to the requested work item and belongs to the resolved Azure DevOps target. Pass either the listed attachment ID or URL and a new file path or existing directory. The command writes bytes only to that local destination; its structured output never includes file content or credentials. Downloads are bounded to 64 MiB; attachments with a known larger size are rejected before content retrieval:
+Download is explicit and revalidates a fresh listed selector against the requested work item (and comment when applicable) before reconstructing an Azure DevOps binary request. The command writes bytes only to a new local destination; its structured output never includes file content, HTML, query strings, or credentials. Downloads are bounded to 64 MiB and permit only PNG/JPEG/GIF/WebP, PDF, DOC/DOCX, Markdown, and plain text whose metadata and content validation agree. It does not render, extract, execute, index, or send documents elsewhere:
 
 ```sh
 mkdir -p ./ticket-evidence
 azdo-axi work-item attachment download 123 \
-  11111111-2222-3333-4444-555555555555 \
+  'relation:0:11111111-2222-3333-4444-555555555555' \
   --path ./ticket-evidence
 ```
 

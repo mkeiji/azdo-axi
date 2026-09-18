@@ -38,11 +38,15 @@ export class NodeAzRunner implements CommandRunner {
 
   async runToFile(args: readonly string[], path: string): Promise<void> {
     try {
-      await execFileAsync("az", [...args, "--out-file", path], {
-        encoding: "utf8",
-        maxBuffer: 16 * 1024 * 1024,
-        windowsHide: true,
-      });
+      await execFileAsync(
+        "az",
+        [...args, args[0] === "rest" ? "--output-file" : "--out-file", path],
+        {
+          encoding: "utf8",
+          maxBuffer: 16 * 1024 * 1024,
+          windowsHide: true,
+        },
+      );
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT") {

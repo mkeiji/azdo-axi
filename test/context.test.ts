@@ -323,7 +323,7 @@ describe("argument safety", () => {
     ).toThrow("Comments options are not supported");
     expect(() =>
       parseInvocation("work-item", ["attachment", "download", "42"]),
-    ).toThrow("requires a work-item ID, attachment ID or URL, and --path");
+    ).toThrow("requires a work-item ID, listed attachment selector, and --path");
   });
 
   it("requires WIQL before Azure CLI is invoked", () => {

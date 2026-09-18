@@ -125,14 +125,14 @@ export function parseInvocation(
     const [operation, ...downloadArgs] = rest;
     if (operation !== "download") {
       throw validationError("`work-item attachment` requires `download`.", [
-        "Run `azdo-axi work-item attachment download <work-item-id> <attachment-id-or-url> --path <destination>`.",
+        "Run `azdo-axi work-item attachment download <work-item-id> <listed-selector> --path <destination>`.",
       ]);
     }
     const values = parseFlags(downloadArgs, workItemAttachmentDownloadFlags);
     const positions = positional(downloadArgs);
     if (positions.length !== 2 || !stringValue(values.path)) {
       throw validationError(
-        "`work-item attachment download` requires a work-item ID, attachment ID or URL, and --path <destination>.",
+        "`work-item attachment download` requires a work-item ID, listed attachment selector, and --path <destination>.",
       );
     }
     return {
